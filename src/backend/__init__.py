@@ -1,1 +1,1 @@
-"""Storefront Reviewer backend package."""
+"""dropper.ai backend package."""

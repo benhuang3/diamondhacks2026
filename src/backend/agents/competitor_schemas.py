@@ -47,6 +47,14 @@ class CompetitorSnapshot(BaseModel):
         max_length=200,
         description="Shipping policy text, e.g. 'Free shipping over $35'",
     )
+    shipping_days: Optional[int] = Field(
+        default=None,
+        description=(
+            "Standard shipping / delivery time in business days as an "
+            "integer (use the low end of any range, e.g. '3-5 days' -> 3). "
+            "Null if no shipping time is visible."
+        ),
+    )
     notes: str = Field(
         default="",
         max_length=160,
@@ -94,6 +102,14 @@ class CheckoutSnapshot(BaseModel):
     checkout_total: Optional[float] = None
     promos: list[str] = Field(default_factory=list)
     shipping_note: str = Field(default="", max_length=200)
+    shipping_days: Optional[int] = Field(
+        default=None,
+        description=(
+            "Standard shipping / delivery time in business days as an "
+            "integer (use the low end of any range, e.g. '3-5 days' -> 3). "
+            "Null if no shipping time is visible."
+        ),
+    )
     notes: str = Field(default="", max_length=160)
     reached_checkout: bool = False
     # Prices for OTHER shared product categories spotted in passing while

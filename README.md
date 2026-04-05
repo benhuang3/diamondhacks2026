@@ -1,4 +1,4 @@
-# Storefront Reviewer
+# dropper.ai
 
 A digital storefront reviewer with two functions:
 1. **Scan** — Browser Use agent finds a11y/UX issues; Chrome extension highlights them in-page; report with scores + visualizations.

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cart — Sole Haven</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="brand">Sole Haven</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="index.html" class="nav-link">Shop</a>
+        <a href="about.html" class="nav-link">About</a>
+        <a href="cart.html" class="nav-link cart-link active">
+          Cart <span id="cart-count" class="cart-count">0</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <h1 class="page-title">Your cart</h1>
+    <div id="cart-container"></div>
+
+    <section id="checkout-section" class="checkout-section" hidden>
+      <h2>Checkout</h2>
+      <p class="checkout-note">Demo only — this form does not process payments.</p>
+      <form id="checkout-form" class="checkout-form" novalidate>
+        <div class="form-row">
+          <label for="name">Full name</label>
+          <input id="name" name="name" type="text" autocomplete="name" required />
+        </div>
+        <div class="form-row">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" required />
+        </div>
+        <div class="form-row">
+          <label for="card">Card number</label>
+          <input id="card" name="card" type="text" inputmode="numeric" placeholder="4242 4242 4242 4242" required />
+        </div>
+        <div class="form-grid">
+          <div class="form-row">
+            <label for="expiry">Expiry</label>
+            <input id="expiry" name="expiry" type="text" placeholder="MM/YY" required />
+          </div>
+          <div class="form-row">
+            <label for="cvc">CVC</label>
+            <input id="cvc" name="cvc" type="text" inputmode="numeric" placeholder="123" required />
+          </div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Place order</button>
+        <p id="checkout-message" class="checkout-message" role="status"></p>
+      </form>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Sole Haven. Demo store.</p>
+    </div>
+  </footer>
+
+  <script src="products.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

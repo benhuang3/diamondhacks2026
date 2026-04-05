@@ -110,7 +110,7 @@ function Popup() {
           >
             SR
           </div>
-          <strong style={{ fontSize: 13 }}>Storefront Reviewer</strong>
+          <strong style={{ fontSize: 13 }}>dropper.ai</strong>
         </div>
         <StatusPill status={status} />
       </div>

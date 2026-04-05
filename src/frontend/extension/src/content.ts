@@ -533,11 +533,11 @@ function renderUnifiedSidebar() {
   const title = document.createElement("div");
   title.className = "sr-sidebar-title";
   if (hasFindings) {
-    title.textContent = `Storefront Reviewer · ${currentAnnotations.length} issue${currentAnnotations.length === 1 ? "" : "s"}`;
+    title.textContent = `dropper.ai · ${currentAnnotations.length} issue${currentAnnotations.length === 1 ? "" : "s"}`;
   } else if (status) {
-    title.textContent = "Storefront Reviewer · scanning…";
+    title.textContent = "dropper.ai · scanning…";
   } else {
-    title.textContent = "Storefront Reviewer";
+    title.textContent = "dropper.ai";
   }
   const collapseBtn = document.createElement("button");
   collapseBtn.className = "sr-sidebar-collapse";
@@ -861,16 +861,16 @@ chrome.runtime.onMessage.addListener(
 );
 
 // Website ↔ extension handshake stub: frontend can dispatch
-// window.postMessage({source:"storefront-reviewer", type:"OPEN_SCAN", scan_id}).
+// window.postMessage({source:"dropper-ai", type:"OPEN_SCAN", scan_id}).
 window.addEventListener("message", (ev) => {
   const data = ev.data;
   if (
     data &&
     typeof data === "object" &&
-    data.source === "storefront-reviewer"
+    data.source === "dropper-ai"
   ) {
     // Forward to background for future integration.
-    console.debug("[storefront-reviewer] received postMessage", data);
+    console.debug("[dropper-ai] received postMessage", data);
     chrome.runtime.sendMessage(data).catch(() => {});
   }
 });

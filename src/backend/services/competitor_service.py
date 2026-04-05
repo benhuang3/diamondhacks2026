@@ -26,6 +26,14 @@ async def start_competitor_job(
 
 
 def _result_from_row(row: dict, job_id: str) -> CompetitorResult:
+    # shipping_days isn't a dedicated column — it rides in raw_data JSON.
+    raw = row.get("raw_data") or {}
+    shipping_days = raw.get("shipping_days") if isinstance(raw, dict) else None
+    if shipping_days is not None:
+        try:
+            shipping_days = int(shipping_days)
+        except (TypeError, ValueError):
+            shipping_days = None
     return CompetitorResult(
         id=str(row.get("id")),
         job_id=str(row.get("job_id") or job_id),
@@ -36,6 +44,7 @@ def _result_from_row(row: dict, job_id: str) -> CompetitorResult:
         tax=row.get("tax"),
         discount=row.get("discount"),
         checkout_total=row.get("checkout_total"),
+        shipping_days=shipping_days,
         notes=row.get("notes") or "",
     )
 

@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "Storefront Reviewer",
+  "name": "dropper.ai",
   "version": "0.1.0",
   "description": "Agentic accessibility and UX review for any storefront.",
   "action": {
     "default_popup": "src/popup.html",
-    "default_title": "Storefront Reviewer",
+    "default_title": "dropper.ai",
     "default_icon": {
       "16": "public/icons/icon16.png",
       "48": "public/icons/icon48.png",

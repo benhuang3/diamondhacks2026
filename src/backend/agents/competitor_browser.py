@@ -163,6 +163,31 @@ def _clamp(s: Any, n: int) -> str:
     return str(s or "")[:n]
 
 
+def _clean_shipping_days(v: Any) -> Optional[int]:
+    """Coerce agent-supplied shipping_days to a bounded non-negative int.
+
+    Agents sometimes emit floats ('2.0'), strings ('3-5'), or junk. We
+    clamp to 0..30 business days and return None for anything unusable.
+    """
+    if v is None:
+        return None
+    try:
+        if isinstance(v, str):
+            # pick the first integer in a string like "3-5 days" or "~2"
+            import re as _re
+            m = _re.search(r"\d+", v)
+            if not m:
+                return None
+            n = int(m.group(0))
+        else:
+            n = int(float(v))
+    except (TypeError, ValueError):
+        return None
+    if n < 0 or n > 30:
+        return None
+    return n
+
+
 # --- Demo fallback --------------------------------------------------------
 
 # Five rotating demo templates. We pick one via hash(url) so the same URL
@@ -232,6 +257,7 @@ def _demo_snapshot_for(url: str, *, is_fallback: bool = False) -> dict[str, Any]
         "featured_price": tpl["featured_price"],
         "promos": list(tpl["promos"]),
         "shipping_note": tpl["shipping_note"],
+        "shipping_days": _demo_shipping_days(url),
         "notes": tpl["notes"],
         "top_products": [
             {"product": tpl["featured_product"], "price": tpl["featured_price"]},
@@ -239,6 +265,12 @@ def _demo_snapshot_for(url: str, *, is_fallback: bool = False) -> dict[str, Any]
         "is_demo": True,
         "is_fallback": is_fallback,
     }
+
+
+def _demo_shipping_days(url: str) -> int:
+    """Deterministic 2..7 business-day estimate keyed on the URL."""
+    h = hashlib.sha256((url or "demo").encode("utf-8")).digest()
+    return 2 + (h[1] % 6)
 
 
 def _is_demo_key() -> bool:
@@ -303,8 +335,10 @@ async def _run_browser_use_agent(
         "showcased (featured_product, e.g. 'Blue Leather Bifold Wallet'); "
         "its price (featured_price, USD float or null); any promotional "
         "codes or sale banners (promos list, <=5 items); the shipping "
-        "policy if visible (shipping_note); ONE short observation, one "
-        "sentence max (notes, <=160 chars). "
+        "policy if visible (shipping_note); standard shipping delivery "
+        "time in business days (shipping_days, integer — low end of any "
+        "range, e.g. '3-5 days' -> 3, null if unknown); ONE short "
+        "observation, one sentence max (notes, <=160 chars). "
         "If no clear featured product exists, leave featured_product "
         "empty and featured_price null. Do not navigate or interact, "
         "only observe and return structured output."
@@ -361,6 +395,7 @@ async def _run_browser_use_agent(
         "featured_price": featured_price,
         "promos": promos,
         "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
+        "shipping_days": _clean_shipping_days(parsed.shipping_days),
         "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
         "top_products": _clean_top_products(parsed.top_products or []),
         "is_demo": False,
@@ -420,8 +455,11 @@ async def extract_competitor_snapshot(
                 "being showcased (featured_product); its price "
                 "(featured_price, USD float or null); any promotional codes "
                 "or sale banners (promos list, <=5 items); the shipping "
-                "policy if visible (shipping_note); ONE short observation, "
-                "one sentence max (notes, <=160 chars). If no clear featured "
+                "policy if visible (shipping_note); standard shipping "
+                "delivery time in business days (shipping_days, integer — "
+                "low end of any range, null if unknown); ONE short "
+                "observation, one sentence max (notes, <=160 chars). If "
+                "no clear featured "
                 "product exists, leave "
                 "featured_product empty and featured_price null."
                 + top_clause
@@ -455,6 +493,7 @@ async def extract_competitor_snapshot(
                 "featured_price": featured_price,
                 "promos": promos,
                 "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
+                "shipping_days": _clean_shipping_days(parsed.shipping_days),
                 "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
                 "top_products": top_products,
                 "is_demo": False,
@@ -591,6 +630,7 @@ def _demo_checkout_for(
         "checkout_total": round(checkout_total, 2),
         "promos": list(tpl["promos"]),
         "shipping_note": tpl["shipping_note"],
+        "shipping_days": _demo_shipping_days(url),
         "notes": "demo checkout flow",
         "reached_checkout": True,
         "other_product_prices": [],
@@ -647,7 +687,10 @@ async def _run_checkout_agent(
         "`shipping`/`tax`/`checkout_total`. If add-to-cart fails "
         "(skeleton loaders, captcha, auth wall, out of stock), keep "
         "whatever price you already captured and return with "
-        "reached_checkout=false. DO NOT proceed to checkout. DO NOT "
+        "reached_checkout=false. While on the product or cart page, also "
+        "record `shipping_days` (standard delivery ETA in business days "
+        "as an integer — low end of any range, null if not shown). "
+        "DO NOT proceed to checkout. DO NOT "
         "enter payment information. DO NOT create an account. If you "
         "hit a login wall, set reached_checkout=false and return "
         "whatever you already captured (one-sentence reason in notes, "
@@ -727,6 +770,7 @@ async def _run_checkout_agent(
         "checkout_total": _coerce_money(parsed.checkout_total),
         "promos": promos,
         "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
+        "shipping_days": _clean_shipping_days(parsed.shipping_days),
         "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
         "reached_checkout": bool(parsed.reached_checkout),
         "other_product_prices": other_prices,
@@ -815,6 +859,9 @@ async def extract_checkout_snapshot(
                 "page and read a subtotal there. Otherwise return with "
                 "reached_checkout=false but keep the catalog `price` "
                 "populated.\n"
+                "Also record `shipping_days` — standard delivery ETA in "
+                "business days as an integer (low end of any range). "
+                "Null if not shown.\n"
             )
             if other_products:
                 clean = [p.replace("'", "") for p in other_products if p]
@@ -896,6 +943,7 @@ async def extract_checkout_snapshot(
                 "checkout_total": _coerce_money(parsed.checkout_total),
                 "promos": promos,
                 "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
+                "shipping_days": _clean_shipping_days(parsed.shipping_days),
                 "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
                 "reached_checkout": bool(parsed.reached_checkout),
                 "other_product_prices": other_prices_cloud,

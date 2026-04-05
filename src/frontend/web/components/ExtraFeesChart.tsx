@@ -35,11 +35,11 @@ export function ExtraFeesChart({
         <CardTitle>Extra fees (shipping + tax)</CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="h-72 w-full">
+        <div className="h-80 w-full">
           <ResponsiveContainer width="100%" height="100%">
             <BarChart
               data={data}
-              margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              margin={{ top: 8, right: 16, left: 0, bottom: 36 }}
             >
               <CartesianGrid
                 strokeDasharray="3 3"
@@ -48,8 +48,12 @@ export function ExtraFeesChart({
               />
               <XAxis
                 dataKey="name"
-                tick={{ fill: "#475569", fontSize: 12 }}
+                tick={{ fill: "#475569", fontSize: 11 }}
                 axisLine={{ stroke: "#cbd5e1" }}
+                interval={0}
+                angle={-20}
+                textAnchor="end"
+                height={56}
               />
               <YAxis
                 tick={{ fill: "#475569", fontSize: 12 }}

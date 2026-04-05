@@ -199,7 +199,7 @@ def _demo_fix_for(finding: dict[str, Any]) -> FixOperation:
         )
     if category == "a11y":
         title = str(finding.get("title") or "")[:80]
-        alt = f"{title} (added by Storefront Reviewer)" if title else "image"
+        alt = f"{title} (added by dropper.ai)" if title else "image"
         return FixOperation(
             kind="attribute",
             selector=selector,

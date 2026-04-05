@@ -1,4 +1,4 @@
-"""FastAPI entrypoint for the Storefront Reviewer backend."""
+"""FastAPI entrypoint for the dropper.ai backend."""
 
 from __future__ import annotations
 
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Storefront Reviewer", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="dropper.ai", version="0.1.0", lifespan=lifespan)
 
     exact_origins, regex_origins = _parse_cors(settings.cors_origins)
     allow_origin_regex = "|".join(regex_origins) if regex_origins else None

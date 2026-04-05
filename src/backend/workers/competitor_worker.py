@@ -43,54 +43,88 @@ log = logging.getLogger(__name__)
 
 DEMO_COMPETITORS: list[dict[str, Any]] = [
     {
-        "name": "FreshMarket Co",
-        "url": "https://freshmarket.example.com/product/1",
-        "price": 29.99,
+        "name": "MooShoes",
+        "url": "https://mooshoes.com/products/womens-lifestyle-sneakers",
+        "price": 72.50,
         "shipping": 4.99,
-        "tax": 2.40,
-        "discount": "SAVE10",
-        "checkout_total": 34.38,
-        "notes": "Free shipping over $35. 10% off with newsletter signup.",
-    },
-    {
-        "name": "UrbanGoods",
-        "url": "https://urbangoods.example.com/item/abc",
-        "price": 32.50,
-        "shipping": 6.99,
-        "tax": 2.60,
+        "tax": 5.80,
         "discount": None,
-        "checkout_total": 42.09,
-        "notes": "No active promos. Ships from west coast warehouse.",
+        "checkout_total": 83.29,
+        "notes": (
+            "An independent retailer with a focused DTC storefront offering "
+            "lifestyle sneakers and sandals that align with Tip Top Shoes' "
+            "specialty market. | Search for mens clog sandals did not yield "
+            "results within step limits."
+        ),
     },
     {
-        "name": "ValuePick",
-        "url": "https://valuepick.example.com/p/xyz",
-        "price": 27.49,
-        "shipping": 0.00,
-        "tax": 2.20,
-        "discount": "FREESHIP",
-        "checkout_total": 29.69,
-        "notes": "Free shipping promo auto-applied. Lowest price in set.",
-    },
-    {
-        "name": "PrimeStore",
-        "url": "https://primestore.example.com/dp/123",
-        "price": 31.00,
-        "shipping": 0.00,
-        "tax": 2.48,
+        "name": "Crocs",
+        "url": "https://crocs.com/c/womens-lifestyle",
+        "price": 64.99,
+        "shipping": 4.99,
+        "tax": 5.20,
         "discount": None,
-        "checkout_total": 33.48,
-        "notes": "Prime 2-day shipping included.",
+        "checkout_total": 75.18,
+        "notes": (
+            "A direct DTC competitor specializing in clog sandals and "
+            "lifestyle footwear, matching the 'men's clog sandals' "
+            "requirement. | Site displayed skeleton loaders for product "
+            "details and cart was unreachable within step limits."
+        ),
     },
     {
-        "name": "BoutiqueHaus",
-        "url": "https://boutiquehaus.example.com/shop/item",
-        "price": 35.00,
-        "shipping": 5.50,
-        "tax": 2.80,
-        "discount": "WELCOME15",
-        "checkout_total": 37.05,
-        "notes": "Premium brand positioning; 15% off first order.",
+        "name": "Miista",
+        "url": "https://miista.com/collections/sneakers",
+        "price": 350.00,
+        "shipping": None,
+        "tax": 28.00,
+        "discount": None,
+        "checkout_total": 378.00,
+        "notes": (
+            "An independent, handmade-in-Europe brand featuring unique, "
+            "designer-led lifestyle footwear including sneakers and sandals "
+            "sold via their independent store. | Shipping cost calculated "
+            "at checkout"
+        ),
+    },
+    {
+        "name": "Allbirds",
+        "url": "https://allbirds.com/collections/mens",
+        "price": 98.00,
+        "shipping": 0.0,
+        "tax": 7.84,
+        "discount": None,
+        "checkout_total": 105.84,
+        "notes": (
+            "DTC sustainable-materials footwear brand with a focused "
+            "Shopify storefront and free shipping over $75."
+        ),
+    },
+    {
+        "name": "Thursday Boots",
+        "url": "https://thursdayboots.com/collections/mens",
+        "price": 199.00,
+        "shipping": 9.95,
+        "tax": 16.90,
+        "discount": "WELCOME10",
+        "checkout_total": 225.85,
+        "notes": (
+            "Direct-to-consumer leather footwear brand with catalog "
+            "prices visible and standard 3-5 day shipping."
+        ),
+    },
+    {
+        "name": "Koio",
+        "url": "https://koio.co/collections/womens-sneakers",
+        "price": 268.00,
+        "shipping": 12.00,
+        "tax": 22.78,
+        "discount": None,
+        "checkout_total": 302.78,
+        "notes": (
+            "Independent premium Italian-made sneaker brand on a Shopify "
+            "storefront with conditional free shipping over $250."
+        ),
     },
 ]
 
@@ -185,7 +219,7 @@ async def _filter_candidates(
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (compatible; StorefrontReviewer/1.0; "
-                "+https://storefront-reviewer.example)"
+                "+https://dropper-ai.example)"
             ),
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
         }
@@ -268,7 +302,7 @@ async def _run_demo(job_id: str, store_url: str, prompt: str | None, hint: str |
     await update_competitor_job(job_id, progress=0.35)
     await asyncio.sleep(0.4)
 
-    k = min(settings.max_competitors, 4)
+    k = min(settings.max_competitors, len(DEMO_COMPETITORS))
     for comp in DEMO_COMPETITORS[:k]:
         await insert_competitor_result(job_id, dict(comp))
         await asyncio.sleep(0.15)
@@ -522,6 +556,7 @@ async def _browse_one(
         # build a top-3 shared-products × competitors matrix table.
         "raw_data": {
             "other_product_prices": snapshot.get("other_product_prices") or [],
+            "shipping_days": snapshot.get("shipping_days"),
         },
     }
     await insert_competitor_result(job_id, result)
@@ -589,6 +624,7 @@ async def _browse_one(
         "pages_visited": pages_visited,
         "promos": promos,
         "shipping_note": snapshot.get("shipping_note", "") or "",
+        "shipping_days": snapshot.get("shipping_days"),
         "notes": snapshot.get("notes", "") or "",
         "rationale": rationale,
         "is_fallback": is_fallback,

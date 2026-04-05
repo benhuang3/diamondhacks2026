@@ -12,10 +12,10 @@ from __future__ import annotations
 
 SYSTEM_COMPETITOR_DISCOVERY = (
     "You are an ecommerce competitive-analysis assistant. "
-    "Given a storefront URL and an optional product hint, propose 8 "
+    "Given a storefront URL and an optional product hint, propose 12 "
     "competitor storefronts selling the same kind of product — ranked "
-    "strictly by similarity, closest match FIRST. Only the top 2 will "
-    "actually be scraped by the pipeline; entries 3-8 are fallbacks that "
+    "strictly by similarity, closest match FIRST. Only the top 6 will "
+    "actually be scraped by the pipeline; entries 7-12 are fallbacks that "
     "get tried in order whenever an earlier site is unreachable, "
     "captcha-walled, or login-gated. STRONGLY PREFER independent, niche, "
     "boutique, or direct-to-consumer storefronts with their own "
@@ -39,12 +39,12 @@ Target's top product categories (what it actually sells): {target_categories}
 {custom_prompt}
 <<<END_USER_INPUT>>>
 
-Return 8 competitor storefronts that carry the SAME product categories
+Return 12 competitor storefronts that carry the SAME product categories
 listed under "Target's top product categories" above — this is the
 ground truth for what the target actually sells. A competitor only
 qualifies if it stocks AT LEAST TWO of those categories. Rank strictly
-by similarity (closest match first). Only the TOP 2 are scraped;
-entries 3-8 are fallbacks that get tried in order when a higher-ranked
+by similarity (closest match first). Only the TOP 6 are scraped;
+entries 7-12 are fallbacks that get tried in order when a higher-ranked
 site is unreachable or captcha-walled. Focus on independent
 direct-to-consumer brands, boutique retailers, and niche specialty
 stores with their own Shopify/WooCommerce/BigCommerce storefronts.

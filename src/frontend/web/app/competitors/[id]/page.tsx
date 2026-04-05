@@ -12,6 +12,7 @@ import type { Report } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { PriceDeltaChart } from "@/components/PriceDeltaChart";
 import { ExtraFeesChart } from "@/components/ExtraFeesChart";
+import { ShippingChart } from "@/components/ShippingChart";
 import { PriceMatrixTable } from "@/components/PriceMatrixTable";
 import { ScoreCard } from "@/components/ScoreCard";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
@@ -182,6 +183,13 @@ export default function CompetitorReportPage() {
           />
         );
       })()}
+
+      {!isRunning && competitors.length > 0 && (
+        <ShippingChart
+          competitors={competitors}
+          storeUrl={status?.store_url}
+        />
+      )}
 
       {!isRunning && competitors.length > 0 && (
         <ExtraFeesChart

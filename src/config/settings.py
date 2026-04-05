@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # (~60-90s, paid tokens). The live flow compares the target store
     # against the first N competitors that successfully reach their cart
     # pages; remaining candidates in the pool are cancelled once N is hit.
-    max_competitors: int = 3
+    max_competitors: int = 6
     # LLM the browser-use cloud task uses to drive navigation. Picked from
     # browser-use's model catalog; "browser-use-2.0" is their tuned default.
     browser_use_cloud_model: str = "browser-use-2.0"

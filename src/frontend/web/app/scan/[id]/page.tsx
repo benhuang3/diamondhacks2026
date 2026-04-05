@@ -23,8 +23,13 @@ import {
 } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink } from "lucide-react";
 import { formatUrl } from "@/lib/utils";
+import {
+  buildScanMarkdown,
+  downloadMarkdown,
+  scanMarkdownFilename,
+} from "@/lib/markdown-export";
 
 export default function ScanPage() {
   const params = useParams<{ id: string }>();
@@ -57,6 +62,14 @@ export default function ScanPage() {
   const isRunning =
     status?.status === "pending" || status?.status === "running";
 
+  const canDownload =
+    !!status && !isRunning && (findings.length > 0 || !!report);
+  const handleDownload = React.useCallback(() => {
+    if (!status) return;
+    const md = buildScanMarkdown(status, report, findings);
+    downloadMarkdown(scanMarkdownFilename(status), md);
+  }, [status, report, findings]);
+
   return (
     <div className="flex flex-col gap-8">
       <div>
@@ -67,7 +80,7 @@ export default function ScanPage() {
           <ArrowLeft className="h-3.5 w-3.5" /> Back
         </Link>
         <div className="mt-3 flex flex-col gap-2">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
               Scan report
             </h1>
@@ -83,6 +96,17 @@ export default function ScanPage() {
               >
                 {status.status}
               </Badge>
+            )}
+            {canDownload && (
+              <button
+                type="button"
+                onClick={handleDownload}
+                className="ml-auto inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50"
+                title="Download the scan report as a markdown file"
+              >
+                <Download className="h-3.5 w-3.5" />
+                Download .md
+              </button>
             )}
           </div>
           {status && (

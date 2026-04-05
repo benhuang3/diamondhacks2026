@@ -33,6 +33,7 @@ class CompetitorResult(BaseModel):
     tax: Optional[float] = None
     discount: Optional[str] = None
     checkout_total: Optional[float] = None
+    shipping_days: Optional[int] = None
     notes: str = ""
 
 
@@ -45,3 +46,17 @@ class CompetitorJobStatus(BaseModel):
     report_id: Optional[str] = None
     error: Optional[str] = None
     steps: list[ScanStep] = []
+
+
+class CompetitorJobSummary(BaseModel):
+    job_id: str
+    status: Status
+    progress: float = 0.0
+    store_url: str
+    report_id: Optional[str] = None
+    created_at: str
+    updated_at: str
+
+
+class CompetitorJobListResponse(BaseModel):
+    jobs: list[CompetitorJobSummary] = []

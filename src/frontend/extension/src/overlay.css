@@ -1,4 +1,4 @@
-/* Storefront Reviewer — overlay highlights injected by content.ts */
+/* dropper.ai — overlay highlights injected by content.ts */
 
 .sr-highlight {
   box-sizing: border-box;
@@ -136,12 +136,15 @@
 /* Sidebar now floats above the page — no margin-right push, no layout
  * reflow on the host document. Page content stays put; the sidebar
  * overlays the right edge at 82% opacity with a backdrop-filter blur
- * so underlying content remains faintly visible. */
-html.sr-sidebar-open {
-  /* intentionally no margin-right — sidebar overlays instead of pushes */
-}
-html.sr-sidebar-open.sr-sidebar-overlay {
+ * so underlying content remains faintly visible. Force margin-right:0
+ * !important so any earlier push state (or a host page's own
+ * html/body margin) can't still pin content 340px off the right. */
+html.sr-sidebar-open,
+html.sr-sidebar-open body {
   margin-right: 0 !important;
+  padding-right: 0 !important;
+  width: auto !important;
+  transition: none !important;
 }
 .sr-sidebar-overlay .sr-sidebar {
   top: 16px;
@@ -168,8 +171,10 @@ html.sr-sidebar-open.sr-sidebar-overlay {
   justify-content: center;
   padding: 10px 4px;
 }
-html.sr-sidebar-open.sr-sidebar-collapsed-push {
-  /* collapsed state also overlays — no margin push */
+html.sr-sidebar-open.sr-sidebar-collapsed-push,
+html.sr-sidebar-open.sr-sidebar-collapsed-push body {
+  margin-right: 0 !important;
+  padding-right: 0 !important;
 }
 .sr-sidebar-header {
   display: flex;
@@ -246,6 +251,7 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   width: 100%;
   min-width: 0;
   max-width: 100%;
+  height: auto;
   padding: 8px 10px;
   border: 0 solid transparent;
   border-left-width: 3px;
@@ -257,6 +263,13 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   font-family: inherit;
   white-space: normal;
   overflow: hidden;
+  /* <button>s historically default to non-wrapping behaviors and
+   * sometimes report a fixed intrinsic height to their parent. Force
+   * the button to behave like a normal block-level flex container so
+   * siblings actually reflow when the description expands. */
+  -webkit-appearance: none;
+  appearance: none;
+  line-height: 1.4;
   transition:
     background 120ms ease,
     border-color 120ms ease;
@@ -334,12 +347,32 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   word-break: break-word;
   overflow-wrap: anywhere;
 }
+.sr-sidebar-item.sr-item-expanded {
+  /* Expanding adds multi-line wrapped text — let the row grow
+   * vertically and stop clipping internal paint. */
+  overflow: visible;
+  align-items: stretch;
+}
+.sr-sidebar-item.sr-item-expanded .sr-sidebar-item-text {
+  overflow: visible;
+}
 .sr-sidebar-item.sr-item-expanded .sr-sidebar-item-desc {
   display: block;
   -webkit-line-clamp: unset;
+  -webkit-box-orient: initial;
   overflow: visible;
   white-space: normal;
   word-break: break-word;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  max-width: 100%;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(241, 245, 249, 0.9);
+  color: #475569;
+}
+.sr-sidebar-item.sr-item-expanded .sr-sidebar-item-title {
+  white-space: normal;
 }
 
 /* Page groups */

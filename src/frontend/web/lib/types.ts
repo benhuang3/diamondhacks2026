@@ -101,6 +101,7 @@ export interface CompetitorResult {
   tax?: number | null;
   discount?: string | null;
   checkout_total?: number | null;
+  shipping_days?: number | null;
   notes: string;
 }
 

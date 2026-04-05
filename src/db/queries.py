@@ -292,6 +292,18 @@ async def create_competitor_job(
     return job_id
 
 
+async def list_competitor_jobs(limit: int = 50) -> list[dict]:
+    """Most-recent competitor jobs first."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(CompetitorJob)
+            .order_by(CompetitorJob.created_at.desc())
+            .limit(limit)
+        )
+        jobs = result.scalars().all()
+    return [_job_to_dict(j) for j in jobs]
+
+
 async def get_competitor_job(job_id: str) -> dict | None:
     async with AsyncSessionLocal() as session:
         row = await session.get(CompetitorJob, job_id)

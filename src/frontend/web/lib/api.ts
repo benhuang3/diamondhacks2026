@@ -145,6 +145,30 @@ export async function getCompetitorJob(
   }
 }
 
+export interface CompetitorJobSummary {
+  job_id: string;
+  status: string;
+  progress: number;
+  store_url: string;
+  report_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listCompetitorJobs(
+  limit = 50,
+): Promise<CompetitorJobSummary[]> {
+  if (DEMO_MODE) return [];
+  try {
+    const r = await safeFetch<{ jobs: CompetitorJobSummary[] }>(
+      `/competitors?limit=${limit}`,
+    );
+    return r.jobs ?? [];
+  } catch {
+    return [];
+  }
+}
+
 export async function cancelCompetitorJob(
   jobId: string,
 ): Promise<CompetitorJobStatus | null> {

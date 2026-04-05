@@ -103,7 +103,7 @@ async function ensureContentScript(tabId: number): Promise<boolean> {
     }
     return true;
   } catch (err) {
-    console.warn("[storefront-reviewer] content-script inject failed", err);
+    console.warn("[dropper-ai] content-script inject failed", err);
     return false;
   }
 }

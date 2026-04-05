@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sole Haven — Shoes for every step</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a href="index.html" class="brand">Sole Haven</a>
+      <nav class="nav" aria-label="Primary">
+        <a href="index.html" class="nav-link active">Shop</a>
+        <a href="about.html" class="nav-link">About</a>
+        <a href="cart.html" class="nav-link cart-link">
+          Cart <span id="cart-count" class="cart-count">0</span>
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="hero">
+      <h1>Shoes for every step</h1>
+      <p>Sneakers, sandals, runners, and dress shoes — curated for comfort, built for the long walk home.</p>
+    </section>
+
+    <section aria-labelledby="products-heading">
+      <h2 id="products-heading" class="section-title">Featured shoes</h2>
+      <div id="product-grid" class="product-grid"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>&copy; 2026 Sole Haven. This is a demo store — no real transactions occur.</p>
+    </div>
+  </footer>
+
+  <script src="products.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

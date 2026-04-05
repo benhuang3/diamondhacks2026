@@ -1,6 +1,6 @@
 # Project Structure
 
-Storefront Reviewer — scans e-commerce sites for accessibility/UX issues and
+dropper.ai — scans e-commerce sites for accessibility/UX issues and
 compares pricing across competitors. FastAPI + SQLite backend, Next.js web
 UI, and a Chrome extension that overlays findings on live pages.
 
