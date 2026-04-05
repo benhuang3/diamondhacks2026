@@ -365,53 +365,7 @@ function createFindingItem(
     });
   }
   row.appendChild(item);
-
-  // Fix button — any same-page finding can request a fix. CSS-kind
-  // fixes self-scope via their selector text and don't depend on
-  // resolveElement having succeeded; attribute/class fixes surface an
-  // inline error at apply time when the selector doesn't resolve.
-  if (!isCrossPage) {
-    row.appendChild(createFixButton(f.id, f.title));
-  }
-  // Error subtext (if the last fix attempt failed).
-  const err = fixErrors.get(f.id);
-  if (err) {
-    const errEl = document.createElement("div");
-    errEl.className = "sr-fix-error";
-    errEl.textContent = err;
-    row.appendChild(errEl);
-  }
   return row;
-}
-
-function createFixButton(findingId: string, findingTitle: string): HTMLButtonElement {
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "sr-fix-btn";
-  const isApplied = appliedFixes.has(findingId);
-  const isPending = pendingFixes.has(findingId);
-  if (isPending) {
-    btn.textContent = "…";
-    btn.disabled = true;
-    btn.classList.add("sr-fix-pending");
-    btn.setAttribute("aria-label", `Generating fix for: ${findingTitle}`);
-  } else if (isApplied) {
-    btn.textContent = "Undo ↺";
-    btn.classList.add("sr-fix-applied");
-    btn.setAttribute("aria-label", `Undo fix for: ${findingTitle}`);
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      undoFix(findingId);
-    });
-  } else {
-    btn.textContent = "Fix";
-    btn.setAttribute("aria-label", `Apply fix for: ${findingTitle}`);
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      requestFix(findingId);
-    });
-  }
-  return btn;
 }
 
 function renderPageGroup(
@@ -609,6 +563,36 @@ function renderUnifiedSidebar() {
   header.appendChild(collapseBtn);
   sidebar.appendChild(header);
 
+  // Watch-live banner — surface the browser-use cloud live-session URL
+  // at the very top of the sidebar (directly under the header) as soon
+  // as any step emits one, so the user has a one-click way to watch the
+  // agent navigate the site while the scan is still running.
+  if (status && scanActive) {
+    const steps = status.steps || [];
+    let liveUrl: string | null = null;
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const u = steps[i].live_url;
+      if (u && (u.startsWith("https://") || u.startsWith("http://"))) {
+        liveUrl = u;
+        break;
+      }
+    }
+    if (liveUrl) {
+      const banner = document.createElement("a");
+      banner.className = "sr-live-banner";
+      banner.href = liveUrl;
+      banner.target = "_blank";
+      banner.rel = "noopener noreferrer";
+      banner.title = "Open the browser-use cloud live session";
+      banner.innerHTML = `
+        <span class="sr-live-banner-dot"></span>
+        <span class="sr-live-banner-text">Watch browser-use navigate live</span>
+        <span class="sr-live-banner-arrow">↗</span>
+      `;
+      sidebar.appendChild(banner);
+    }
+  }
+
   // Status pill + progress bar (scanning) or summary chips (findings ready).
   if (status) {
     const meta = document.createElement("div");
@@ -638,30 +622,6 @@ function renderUnifiedSidebar() {
       err.className = "sr-sidebar-error";
       err.textContent = status.error.slice(0, 160);
       meta.appendChild(err);
-    }
-    // Surface the browser-use cloud live-session URL at the top of the
-    // sidebar as soon as any step emits one — gives the user a one-click
-    // way to watch the agent navigate while the scan is still running.
-    if (scanActive) {
-      const steps = status.steps || [];
-      let liveUrl: string | null = null;
-      for (let i = steps.length - 1; i >= 0; i--) {
-        const u = steps[i].live_url;
-        if (u && (u.startsWith("https://") || u.startsWith("http://"))) {
-          liveUrl = u;
-          break;
-        }
-      }
-      if (liveUrl) {
-        const watchLink = document.createElement("a");
-        watchLink.className = "sr-live-link sr-live-link-meta";
-        watchLink.href = liveUrl;
-        watchLink.target = "_blank";
-        watchLink.rel = "noopener noreferrer";
-        watchLink.textContent = "● Watch live ↗";
-        watchLink.title = "Open the browser-use cloud live session";
-        meta.appendChild(watchLink);
-      }
     }
     sidebar.appendChild(meta);
   }

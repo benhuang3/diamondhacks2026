@@ -121,9 +121,11 @@
   max-width: 100vw;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(140%) blur(10px);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
   color: #0f172a;
-  border-left: 1px solid #e2e8f0;
+  border-left: 1px solid rgba(226, 232, 240, 0.8);
   box-shadow: -4px 0 16px rgba(15, 23, 42, 0.08);
   font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
@@ -131,12 +133,12 @@
   z-index: 2147483645;
   overflow: hidden;
 }
-/* Push page content left when the sidebar is mounted. overflow-x on
- * html still wins on sites that set it, so this is best-effort.
- * Narrow viewports fall back to overlay (see .sr-sidebar-overlay). */
+/* Sidebar now floats above the page — no margin-right push, no layout
+ * reflow on the host document. Page content stays put; the sidebar
+ * overlays the right edge at 82% opacity with a backdrop-filter blur
+ * so underlying content remains faintly visible. */
 html.sr-sidebar-open {
-  margin-right: var(--sr-sidebar-width, 340px) !important;
-  transition: margin-right 180ms ease;
+  /* intentionally no margin-right — sidebar overlays instead of pushes */
 }
 html.sr-sidebar-open.sr-sidebar-overlay {
   margin-right: 0 !important;
@@ -167,7 +169,7 @@ html.sr-sidebar-open.sr-sidebar-overlay {
   padding: 10px 4px;
 }
 html.sr-sidebar-open.sr-sidebar-collapsed-push {
-  margin-right: 44px !important;
+  /* collapsed state also overlays — no margin push */
 }
 .sr-sidebar-header {
   display: flex;
@@ -247,9 +249,9 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   padding: 8px 10px;
   border: 0 solid transparent;
   border-left-width: 3px;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid rgba(241, 245, 249, 0.7);
   border-radius: 0;
-  background: #ffffff;
+  background: transparent;
   text-align: left;
   cursor: pointer;
   font-family: inherit;
@@ -562,17 +564,53 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
 .sr-live-link:hover {
   background: #d1fae5;
 }
-.sr-live-link.sr-live-link-meta {
-  margin-left: auto;
-  animation: sr-live-pulse 1.8s ease-in-out infinite;
+/* Top-of-sidebar "watch live" banner — appears directly under the
+ * header as soon as browser-use emits a live-session URL. */
+.sr-live-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: linear-gradient(90deg, #ecfdf5, #d1fae5);
+  color: #047857;
+  border-bottom: 1px solid #a7f3d0;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+.sr-live-banner:hover {
+  background: linear-gradient(90deg, #d1fae5, #a7f3d0);
+}
+.sr-live-banner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  flex-shrink: 0;
+  animation: sr-live-pulse 1.4s ease-in-out infinite;
+}
+.sr-live-banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sr-live-banner-arrow {
+  flex-shrink: 0;
+  font-size: 13px;
 }
 @keyframes sr-live-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
+    transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+    box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+    transform: scale(1.15);
   }
 }
 .sr-reasoning.sr-reasoning-expanded {
