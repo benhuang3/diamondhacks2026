@@ -1,0 +1,79 @@
+"""FastAPI entrypoint for the Storefront Reviewer backend."""
+
+from __future__ import annotations
+
+import logging
+import re
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from src.config.settings import settings
+from src.db.client import init_db
+
+from .routes.annotations import router as annotations_router
+from .routes.competitors import router as competitors_router
+from .routes.reports import router as reports_router
+from .routes.scan import router as scan_router
+
+log = logging.getLogger(__name__)
+
+
+def _parse_cors(origins_raw: str) -> tuple[list[str], list[str]]:
+    """Split a comma-separated origins string into (exact_origins, regexes).
+
+    `chrome-extension://*` becomes a regex; others are exact.
+    """
+    exact: list[str] = []
+    regexes: list[str] = []
+    for o in (origins_raw or "").split(","):
+        o = o.strip()
+        if not o:
+            continue
+        if "*" in o:
+            # convert glob-ish to regex
+            pat = re.escape(o).replace(r"\*", ".*")
+            regexes.append(f"^{pat}$")
+        else:
+            exact.append(o)
+    return exact, regexes
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        await init_db()
+    except Exception as e:  # noqa: BLE001
+        log.exception("init_db failed at startup: %s", e)
+    yield
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="Storefront Reviewer", version="0.1.0", lifespan=lifespan)
+
+    exact_origins, regex_origins = _parse_cors(settings.cors_origins)
+    allow_origin_regex = "|".join(regex_origins) if regex_origins else None
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=exact_origins,
+        allow_origin_regex=allow_origin_regex,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.get("/health")
+    async def health() -> dict[str, str]:
+        return {"status": "ok"}
+
+    app.include_router(scan_router)
+    app.include_router(competitors_router)
+    app.include_router(annotations_router)
+    app.include_router(reports_router)
+
+    return app
+
+
+app = create_app()

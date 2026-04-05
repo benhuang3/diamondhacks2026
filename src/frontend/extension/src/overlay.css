@@ -1,0 +1,89 @@
+/* Storefront Reviewer — overlay highlights injected by content.ts */
+
+.sr-highlight {
+  box-sizing: border-box;
+  border-radius: 3px;
+  border-width: 2px;
+  border-style: solid;
+  pointer-events: auto;
+  transition: box-shadow 120ms ease;
+}
+
+.sr-highlight.sr-sev-high {
+  border-color: #e11d48;
+  background-color: rgba(225, 29, 72, 0.1);
+  box-shadow: 0 0 0 1px rgba(225, 29, 72, 0.4);
+}
+.sr-highlight.sr-sev-medium {
+  border-color: #f59e0b;
+  background-color: rgba(245, 158, 11, 0.1);
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.4);
+}
+.sr-highlight.sr-sev-low {
+  border-color: #0ea5e9;
+  background-color: rgba(14, 165, 233, 0.08);
+  box-shadow: 0 0 0 1px rgba(14, 165, 233, 0.35);
+}
+
+.sr-highlight:hover {
+  box-shadow: 0 0 0 2px currentColor;
+}
+
+.sr-tooltip {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 6px;
+  max-width: 320px;
+  min-width: 220px;
+  padding: 10px 12px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+  border-radius: 6px;
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.35);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-4px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+  z-index: 2147483641;
+  pointer-events: none;
+  white-space: normal;
+  text-align: left;
+}
+
+.sr-highlight:hover .sr-tooltip,
+.sr-highlight:focus .sr-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.sr-tooltip-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: #ffffff;
+}
+.sr-tooltip-desc {
+  color: #cbd5e1;
+  margin-bottom: 6px;
+}
+.sr-tooltip-sug {
+  color: #a5b4fc;
+  font-style: italic;
+}
+
+.sr-tooltip.sr-sev-high {
+  border-left: 3px solid #fb7185;
+}
+.sr-tooltip.sr-sev-medium {
+  border-left: 3px solid #fbbf24;
+}
+.sr-tooltip.sr-sev-low {
+  border-left: 3px solid #38bdf8;
+}

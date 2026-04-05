@@ -1,0 +1,26 @@
+# --- Web framework ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+
+# --- Config / validation ---
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+python-dotenv>=1.0.1
+
+# --- HTTP client ---
+httpx>=0.27.0
+
+# --- LLM ---
+anthropic>=0.39.0
+
+# --- Browser automation ---
+browser-use>=0.1.40
+playwright>=1.48.0
+
+# --- Database (SQLite) ---
+aiosqlite>=0.20.0
+sqlalchemy>=2.0.35
+
+# --- Logging ---
+structlog>=24.4.0
