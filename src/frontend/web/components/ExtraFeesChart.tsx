@@ -14,20 +14,17 @@ import type { CompetitorResult } from "@/lib/types";
 import { backfillFees, targetRow } from "@/lib/estimates";
 import { Card, CardHeader, CardTitle, CardContent } from "./ui/card";
 
-export function PriceDeltaChart({
+export function ExtraFeesChart({
   competitors,
   storeUrl,
 }: {
   competitors: CompetitorResult[];
   storeUrl?: string;
 }) {
-  // Prepend "our brand" row (target store) with a median-seeded estimate
-  // so it's visible alongside competitors in the stacked bar.
   const rows = competitors.map(backfillFees);
   const tgt = storeUrl ? targetRow(storeUrl, competitors) : null;
   const data = (tgt ? [tgt, ...rows] : rows).map((r) => ({
     name: r.is_target ? `${r.name} (you)` : r.name,
-    price: r.price,
     shipping: r.shipping,
     tax: r.tax,
   }));
@@ -35,7 +32,7 @@ export function PriceDeltaChart({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Checkout cost breakdown</CardTitle>
+        <CardTitle>Extra fees (shipping + tax)</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-72 w-full">
@@ -69,20 +66,14 @@ export function PriceDeltaChart({
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar
-                dataKey="price"
-                stackId="cost"
-                fill="#4f46e5"
-                radius={[0, 0, 0, 0]}
-              />
-              <Bar
                 dataKey="shipping"
-                stackId="cost"
+                stackId="fees"
                 fill="#f59e0b"
                 radius={[0, 0, 0, 0]}
               />
               <Bar
                 dataKey="tax"
-                stackId="cost"
+                stackId="fees"
                 fill="#0ea5e9"
                 radius={[4, 4, 0, 0]}
               />

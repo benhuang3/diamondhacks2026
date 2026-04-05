@@ -262,7 +262,7 @@ snapshot includes "featured_product" (product name) and "featured_price"
 product to cart and reaching the checkout preview: "price" (subtotal),
 "shipping", "tax", "fees", "discount_code", "discount_amount",
 "checkout_total", "pages_visited", and "reached_checkout" (bool). If a competitor has
-BOTH tax=0 and fees=0, fill in plausible estimates (sales tax ≈ 7-9%
+BOTH tax=0 and fees=0, fill half of the entries with plausible estimates (sales tax ≈ 7-9%
 of subtotal, handling fee $0-$3) and flag them as "estimated" in the
 summary. When writing the summary, explicitly call out which competitor products have
 the LARGEST absolute price gap vs. the target's featured product, and

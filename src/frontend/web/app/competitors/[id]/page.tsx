@@ -11,7 +11,7 @@ import {
 import type { Report } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { PriceDeltaChart } from "@/components/PriceDeltaChart";
-import { PriceBreakdownChart } from "@/components/PriceBreakdownChart";
+import { ExtraFeesChart } from "@/components/ExtraFeesChart";
 import { PriceMatrixTable } from "@/components/PriceMatrixTable";
 import { ScoreCard } from "@/components/ScoreCard";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
@@ -55,6 +55,16 @@ export default function CompetitorReportPage() {
   }, [jobId]);
 
   const competitors = status?.competitors ?? [];
+  // Most recent browser-use cloud live-session URL across all lanes —
+  // lets the user pop open the running agent in a new tab.
+  const liveUrl = React.useMemo(() => {
+    const steps = status?.steps ?? [];
+    for (let i = steps.length - 1; i >= 0; i--) {
+      const u = steps[i].live_url;
+      if (u && typeof u === "string" && u.startsWith("http")) return u;
+    }
+    return "";
+  }, [status?.steps]);
 
   return (
     <div className="flex flex-col gap-8">
@@ -111,7 +121,25 @@ export default function CompetitorReportPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <Progress value={pct} />
-            <p className="text-sm text-slate-500">{pct}% complete</p>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm text-slate-500">{pct}% complete</p>
+              {liveUrl ? (
+                <a
+                  href={liveUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+                  title="Open the browser-use cloud live session"
+                >
+                  <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-white" />
+                  Watch live browser
+                </a>
+              ) : (
+                <span className="text-xs text-slate-400">
+                  live browser link appears once the cloud agent starts…
+                </span>
+              )}
+            </div>
           </CardContent>
         </Card>
       )}
@@ -155,37 +183,18 @@ export default function CompetitorReportPage() {
         );
       })()}
 
-      {!isRunning && (() => {
-        const section = report?.sections.find(
-          (s) => s.title === "Extra fees (shipping + tax)",
-        );
-        const data =
-          (section?.chart as
-            | {
-                data?: {
-                  label: string;
-                  value: number;
-                  shipping?: number;
-                  tax?: number;
-                }[];
-              }
-            | undefined)?.data ?? [];
-        if (data.length === 0) return null;
-        // Adapt the fees data to the existing PriceBreakdownChart shape.
-        // Highest fee = "priced higher" (orange); lowest = emerald.
-        const sorted = [...data].sort((a, b) => a.value - b.value);
-        const median = sorted[Math.floor(sorted.length / 2)]?.value ?? 0;
-        const adapted = data.map((d) => ({
-          label: d.label,
-          value: d.value,
-          delta: d.value - median,
-          is_target: false,
-        }));
-        return <PriceBreakdownChart data={adapted} body={section?.body} />;
-      })()}
+      {!isRunning && competitors.length > 0 && (
+        <ExtraFeesChart
+          competitors={competitors}
+          storeUrl={status?.store_url}
+        />
+      )}
 
       {!isRunning && competitors.some((c) => c.checkout_total != null) && (
-        <PriceDeltaChart competitors={competitors} />
+        <PriceDeltaChart
+          competitors={competitors}
+          storeUrl={status?.store_url}
+        />
       )}
 
       {!isRunning && competitors.length > 0 && (
@@ -199,11 +208,6 @@ export default function CompetitorReportPage() {
                 <thead>
                   <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="py-2 pr-4">Name</th>
-                    <th className="py-2 pr-4">Price</th>
-                    <th className="py-2 pr-4">Ship</th>
-                    <th className="py-2 pr-4">Tax</th>
-                    <th className="py-2 pr-4">Discount</th>
-                    <th className="py-2 pr-4">Total</th>
                     <th className="py-2">Notes</th>
                   </tr>
                 </thead>
@@ -223,29 +227,6 @@ export default function CompetitorReportPage() {
                           {c.name}
                           <ExternalLink className="h-3 w-3" />
                         </a>
-                      </td>
-                      <td className="py-3 pr-4 tabular-nums text-slate-700">
-                        {c.price != null ? `$${c.price.toFixed(2)}` : "—"}
-                      </td>
-                      <td className="py-3 pr-4 tabular-nums text-slate-700">
-                        {c.shipping != null
-                          ? `$${c.shipping.toFixed(2)}`
-                          : "—"}
-                      </td>
-                      <td className="py-3 pr-4 tabular-nums text-slate-700">
-                        {c.tax != null ? `$${c.tax.toFixed(2)}` : "—"}
-                      </td>
-                      <td className="py-3 pr-4">
-                        {c.discount ? (
-                          <Badge variant="success">{c.discount}</Badge>
-                        ) : (
-                          <span className="text-slate-400">—</span>
-                        )}
-                      </td>
-                      <td className="py-3 pr-4 font-semibold tabular-nums text-slate-900">
-                        {c.checkout_total != null
-                          ? `$${c.checkout_total.toFixed(2)}`
-                          : "—"}
                       </td>
                       <td className="py-3 text-slate-600">{c.notes}</td>
                     </tr>
