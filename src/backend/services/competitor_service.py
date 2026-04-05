@@ -11,6 +11,8 @@ from src.db.queries import (
 )
 
 from ..models.competitor import CompetitorJobStatus, CompetitorResult
+from ..models.scan import ScanStep
+from ..observability import scan_log
 
 
 async def start_competitor_job(
@@ -40,6 +42,7 @@ async def fetch_competitor_job(job_id: str) -> Optional[CompetitorJobStatus]:
         return None
     rows = await list_competitor_results(job_id)
     results = [_result_from_row(r, job_id) for r in rows]
+    steps = [ScanStep(**e) for e in scan_log.snapshot(job_id)]
     return CompetitorJobStatus(
         job_id=str(job.get("id") or job.get("job_id") or job_id),
         status=job.get("status", "pending"),
@@ -48,4 +51,5 @@ async def fetch_competitor_job(job_id: str) -> Optional[CompetitorJobStatus]:
         competitors=results,
         report_id=(str(job["report_id"]) if job.get("report_id") else None),
         error=job.get("error"),
+        steps=steps,
     )

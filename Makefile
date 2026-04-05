@@ -11,7 +11,7 @@ help:
 install:
 	python3 -m venv .venv
 	.venv/bin/pip install -r src/backend/requirements.txt
-	.venv/bin/playwright install chromium
+	.venv/bin/browser-use install
 	cd src/frontend/web && npm install
 	cd src/frontend/extension && npm install
 

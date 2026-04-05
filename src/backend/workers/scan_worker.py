@@ -1,8 +1,8 @@
 """Scan worker: drives a scan from pending → done.
 
 DEMO_MODE produces a deterministic set of fake findings. Live mode uses
-Playwright + Claude; on any failure falls back to demo output so background
-tasks never leave a scan in an indeterminate state.
+the browser-use agent + Claude; on any failure falls back to demo output
+so background tasks never leave a scan in an indeterminate state.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from src.db.queries import insert_findings_bulk, update_scan
 from ..agents.browser_use_runner import fetch_page_summary
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
 from ..agents import accessibility_prompts as prompts
+from ..observability import scan_log
 from ..observability.metrics import metrics
 from ..security.url_guard import UnsafeURLError, resolve_public_url
 from .report_generator import generate_scan_report
@@ -112,8 +113,10 @@ DEMO_FINDINGS_TEMPLATE: list[dict[str, Any]] = [
 
 async def _run_demo(scan_id: str, url: str, max_pages: int) -> None:
     await update_scan(scan_id, status="running", progress=0.1)
+    scan_log.append(scan_id, {"step": 0, "next_goal": "running in demo mode"})
     await asyncio.sleep(0.4)
     await update_scan(scan_id, progress=0.3)
+    scan_log.append(scan_id, {"step": 1, "next_goal": "loading canned findings"})
     await asyncio.sleep(0.4)
 
     # pick 6-10 findings deterministically but with slight variance
@@ -121,18 +124,33 @@ async def _run_demo(scan_id: str, url: str, max_pages: int) -> None:
     batch = [dict(f, page_url=url) for f in DEMO_FINDINGS_TEMPLATE[:k]]
     await insert_findings_bulk(scan_id, batch)
     await update_scan(scan_id, progress=0.7)
+    scan_log.append(
+        scan_id, {"step": 2, "next_goal": f"inserted {k} findings"}
+    )
     await asyncio.sleep(0.4)
 
+    scan_log.append(scan_id, {"step": 3, "next_goal": "generating report"})
     await generate_scan_report(scan_id, url)
     await update_scan(scan_id, status="done", progress=1.0)
+    scan_log.append(scan_id, {"step": 4, "next_goal": "done"})
 
 
 async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
     await update_scan(scan_id, status="running", progress=0.1)
+    scan_log.append(scan_id, {"step": 0, "next_goal": f"validating {url}"})
     # DNS-level SSRF check right before we actually fetch.
     await resolve_public_url(url)
-    snapshot = await fetch_page_summary(url)
+    snapshot = await fetch_page_summary(url, scan_id=scan_id)
     await update_scan(scan_id, progress=0.35)
+    scan_log.append(
+        scan_id,
+        {
+            "step": 100,
+            "source": "claude",
+            "next_goal": "analyzing page with Claude",
+            "evaluation": f"captured {len(snapshot.get('interactive_elements', []))} elements",
+        },
+    )
 
     client = ClaudeClient()
     prompt = prompts.SCAN_FINDINGS_PROMPT.format(
@@ -164,8 +182,13 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
         ]
         await insert_findings_bulk(scan_id, batch)
         await update_scan(scan_id, progress=0.85)
+        scan_log.append(
+            scan_id,
+            {"step": 101, "next_goal": f"persisted {len(batch)} findings"},
+        )
         await generate_scan_report(scan_id, url)
         await update_scan(scan_id, status="done", progress=1.0)
+        scan_log.append(scan_id, {"step": 102, "next_goal": "done"})
     except DemoFallbackError as e:
         log.info("Falling back to demo for scan %s: %s", scan_id, e)
         await _run_demo(scan_id, url, max_pages)

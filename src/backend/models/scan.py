@@ -48,6 +48,16 @@ class ScanFinding(BaseModel):
     page_url: str
 
 
+class ScanStep(BaseModel):
+    step: int
+    ts: float = 0.0
+    source: str = "worker"  # "worker" | "claude" | "browser-use"
+    evaluation: str = ""
+    memory: str = ""
+    next_goal: str = ""
+    actions: list[str] = []
+
+
 class ScanStatus(BaseModel):
     scan_id: str
     status: Status
@@ -56,9 +66,25 @@ class ScanStatus(BaseModel):
     findings_count: int = 0
     report_id: Optional[str] = None
     error: Optional[str] = None
+    steps: list[ScanStep] = []
 
 
 class AnnotationsResponse(BaseModel):
     scan_id: str
     url: str
     annotations: list[ScanFinding]
+
+
+class ScanSummary(BaseModel):
+    scan_id: str
+    url: str
+    status: Status
+    progress: float = 0.0
+    findings_count: int = 0
+    report_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScanListResponse(BaseModel):
+    scans: list[ScanSummary]

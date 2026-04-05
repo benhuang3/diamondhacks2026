@@ -10,6 +10,7 @@ const buttonVariants = cva(
       variant: {
         default:
           "bg-brand-600 text-white hover:bg-brand-700 shadow-sm",
+        gradient: "btn-gradient text-white",
         outline:
           "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50",
         ghost: "text-slate-700 hover:bg-slate-100",

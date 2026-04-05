@@ -149,10 +149,10 @@ async def resolve_public_url(raw: str) -> str:
 # Process-wide DNS egress guard
 # ---------------------------------------------------------------------------
 # ``resolve_public_url`` only validates at the moment of the check, so a DNS
-# rebind or a 3xx redirect made by Playwright/Browser-Use can still reach a
-# private IP. This guard installs a wrapper around ``socket.getaddrinfo``
-# that filters out any tuple resolving to a disallowed IP, no matter who in
-# the process triggers the lookup (Playwright, httpx, anthropic SDK, etc.).
+# rebind or a 3xx redirect made by browser-use can still reach a private IP.
+# This guard installs a wrapper around ``socket.getaddrinfo`` that filters
+# out any tuple resolving to a disallowed IP, no matter who in the process
+# triggers the lookup (browser-use, httpx, anthropic SDK, etc.).
 
 _guard_lock = threading.Lock()
 _guard_installed = False

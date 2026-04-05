@@ -26,8 +26,8 @@ UI, and a Chrome extension that overlays findings on live pages.
 ## Backend — `src/backend/`
 
 FastAPI + async SQLAlchemy (aiosqlite). Background work runs in
-`BackgroundTasks` in-process. DEMO_MODE swaps out Claude + Playwright calls
-for deterministic fake data.
+`BackgroundTasks` in-process. DEMO_MODE swaps out Claude + browser-use
+calls for deterministic fake data.
 
 ```
 backend/
@@ -51,13 +51,18 @@ backend/
 │   └── competitor_prompts.py
 ├── models/                # Pydantic request/response schemas
 │   ├── scan.py            #   ScanRequest validates URL via SSRF guard
-│   ├── competitor.py
+│   ├── competitor.py      #   CompetitorRequest validates + sanitizes
+│   │                      #   custom_prompt / product_hint as untrusted
 │   └── report.py
 ├── middleware/
-│   ├── rate_limit.py      #   Sliding-window per-IP limiter for POST routes
-│   └── request_context.py #   X-Request-ID + structlog binding + access log
+│   ├── rate_limit.py      #   Per-IP sliding-window limiter, LRU-bounded bucket
+│   │                      #   map, opt-in X-Forwarded-For trust
+│   └── request_context.py #   X-Request-ID (charset-restricted) + structlog
+│                          #   binding + access log
 ├── security/
-│   └── url_guard.py       #   SSRF validation (scheme, IP blocklist, DNS)
+│   └── url_guard.py       #   SSRF: scheme + IP-literal blocklist (unwraps
+│                          #   IPv4-mapped/6to4/teredo v6), async DNS check,
+│                          #   and a process-wide getaddrinfo egress guard
 ├── observability/
 │   └── metrics.py         #   In-process counters, Prometheus exposition
 └── tests/                 # pytest (46 tests) — fixtures in conftest.py
@@ -71,12 +76,17 @@ backend/
 ### Request flow
 
 ```
-Client → CORS → RateLimitMiddleware → RequestContextMiddleware
-      → FastAPI route → service → queries.py (SQLAlchemy) → SQLite
+Client → CORS (credentials:off) → RateLimitMiddleware → RequestContextMiddleware
+      → FastAPI route → Pydantic (SSRF URL guard) → service
+      → queries.py (SQLAlchemy) → SQLite (WAL)
                                  ↓
                           BackgroundTasks → worker (scan/competitor)
                                           → Claude + browser_use → DB
 ```
+
+Any DNS resolution inside the worker process is filtered by a global
+``socket.getaddrinfo`` wrapper (installed in lifespan) so DNS rebinding
+and redirect-based SSRF pivots can't reach private ranges.
 
 ## Frontend — `src/frontend/web/`
 
@@ -134,8 +144,10 @@ same schema as reference docs.
 ```
 db/
 ├── schema.py              # ORM models + Index definitions
-├── queries.py             # typed query functions (no raw SQL)
-├── client.py              # async engine + session factory
+├── queries.py             # typed query functions (no raw SQL). Includes
+│                          # insert_findings_bulk() for single-txn batches.
+├── client.py              # async engine + session factory; init_db() sets
+│                          # WAL + synchronous=NORMAL + foreign_keys=ON
 ├── seed.py
 └── migrations/
     ├── 001_init.sql             #   scans, scan_findings
@@ -157,7 +169,8 @@ config/
 
 Settings are environment-driven (`.env` → `settings`). Notable knobs:
 `DEMO_MODE`, `ANTHROPIC_API_KEY`, `DATABASE_URL`, `CORS_ORIGINS`,
-`MAX_SCAN_PAGES`, `MAX_COMPETITORS`, `RATE_LIMIT_SCAN_PER_MIN`.
+`MAX_SCAN_PAGES`, `MAX_COMPETITORS`, `RATE_LIMIT_SCAN_PER_MIN`,
+`RATE_LIMIT_MAX_BUCKETS`, `TRUST_FORWARDED_FOR`, `SSRF_EGRESS_GUARD`.
 
 ## Observability
 
@@ -167,8 +180,9 @@ Settings are environment-driven (`.env` → `settings`). Notable knobs:
   `http_requests_total`, `http_rate_limited_total`, `scans_*_total`,
   `competitor_jobs_*_total`, `claude_calls_total`,
   `claude_call_failures_total`, `ssrf_rejections_total`.
-- **Request IDs** — inbound `X-Request-ID` honored (≤128 chars) or
-  generated; echoed back on every response.
+- **Request IDs** — inbound `X-Request-ID` honored only if it matches
+  `^[A-Za-z0-9_-]{1,128}$`; otherwise a fresh id is generated. Echoed
+  back on every response as `X-Request-ID`.
 
 ## Running
 

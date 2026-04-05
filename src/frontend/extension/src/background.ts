@@ -56,6 +56,40 @@ async function apiGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function ensureContentScript(tabId: number): Promise<boolean> {
+  // If the tab was opened before the extension loaded, the manifest
+  // content script was never injected. Probe with PING first; on failure
+  // inject the built script + CSS programmatically using the paths the
+  // bundler wrote into the final manifest.
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "PING",
+    } satisfies ExtensionMessage);
+    return true;
+  } catch {
+    // fall through and inject
+  }
+  const manifest = chrome.runtime.getManifest();
+  const entry = manifest.content_scripts?.[0];
+  if (!entry?.js) return false;
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: entry.js,
+    });
+    if (entry.css?.length) {
+      await chrome.scripting.insertCSS({
+        target: { tabId },
+        files: entry.css,
+      });
+    }
+    return true;
+  } catch (err) {
+    console.warn("[storefront-reviewer] content-script inject failed", err);
+    return false;
+  }
+}
+
 function stopPolling() {
   if (pollTimer) {
     clearTimeout(pollTimer);
@@ -95,6 +129,13 @@ async function injectAnnotationsFromBackend() {
     const res = await apiGet<AnnotationsResponse>(
       `/annotations/${state.scanId}`,
     );
+    const ok = await ensureContentScript(activeTabId);
+    if (!ok) {
+      throw new Error(
+        "Could not inject annotation overlay into this tab. " +
+          "Some pages (chrome://, web store, new tab) block extensions.",
+      );
+    }
     await chrome.tabs.sendMessage(activeTabId, {
       type: "INJECT_ANNOTATIONS",
       annotations: res.annotations,
@@ -159,11 +200,14 @@ async function clearAnnotations() {
     activeTabId = tab?.id ?? null;
   }
   if (activeTabId != null) {
-    await chrome.tabs
-      .sendMessage(activeTabId, {
-        type: "CLEAR_ANNOTATIONS",
-      } satisfies ExtensionMessage)
-      .catch(() => {});
+    const ok = await ensureContentScript(activeTabId);
+    if (ok) {
+      await chrome.tabs
+        .sendMessage(activeTabId, {
+          type: "CLEAR_ANNOTATIONS",
+        } satisfies ExtensionMessage)
+        .catch(() => {});
+    }
   }
 }
 

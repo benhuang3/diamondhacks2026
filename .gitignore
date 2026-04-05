@@ -30,7 +30,7 @@ build/
 *.tsbuildinfo
 .vercel/
 
-# Playwright
+# browser-use / test artifacts
 playwright-report/
 test-results/
 

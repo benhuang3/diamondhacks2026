@@ -106,6 +106,8 @@ chrome.runtime.onMessage.addListener(
     } else if (msg.type === "CLEAR_ANNOTATIONS") {
       clearAnnotations();
       send({ ok: true });
+    } else if (msg.type === "PING") {
+      send({ ok: true });
     }
     return true;
   },

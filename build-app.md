@@ -11,61 +11,16 @@ With a team of agents and a custom prompt (not necessary), the app scrapes the w
 # Execution Plan
 
 
-## Phase 1: Plan (uses 1 agent)
-```
-Agent: Plan (subagent_type=Plan)
-→ Outputs: architecture diagram, file tree, API contracts, task decomposition.
-→ Creates TODO list with file ownership boundaries
-```
+### Revisions
 
-## Phase 1.5: Environment (uses 1 agent)
-```
-Agent: Plan (subagent_type=Plan)
-Sets up an .env file, dependencies, API keys, then tests them to make sure they work.
-```
 
-### Phase 2: Build (uses 3 parallel agents)
-```
-Agent A: backend-architect     → src/backend/**
-Agent B: frontend-design       → src/frontend/**
-Agent C: python-pro            → src/config/**, src/db/**
-All run in parallel via team-feature with strict file ownership
-```
+1. The price breakdown should be by product, where it shows which products have the biggest price difference between you and your competitors.
 
-### Phase 3: Integrate (uses 1 agent)
-```
-Agent: full-stack-feature skill
-→ Wires API calls, env vars, CORS, auth tokens across layers
-```
+2. After scanning, the plugin should show a sidebar of changes where you can click to each issue and view it.
 
-### Phase 4: Test (uses 3 parallel agents)
-```
-Agent D: test-automator        → tests/**
-Agent E: security-auditor      → scans all files
-Agent F: performance-engineer  → profiles hot paths
-All run in parallel, each writes findings to separate reports
-```
+3. Implement the feature so that attempts to check out and scans the pages along the way, with a maximum depth of MAX_SCAN_PAGES=10. It should do a shallow breadth first search and try to check out an item, to see shipping tax, other fees, and the final price.
 
-### Phase 5: Deploy (uses 1 agent)
-```
-Agent: deployment-engineer + terraform-specialist
-→ Outputs: Dockerfile, K8s manifests or Helm chart, CI/CD pipeline, IaC modules
-```
+4. 
 
-### Phase 6: Harden (uses 2 parallel agents)
-```
-Agent G: python-observability  → adds logging/metrics/tracing
-Agent H: security + cost       → network policies, RBAC, cost tags
-```
 
-## Total: up to 8 agents across 6 phases
-## Parallelism: Phases 2, 4, and 6 run agents concurrently
 
-## Customization
-
-Add to your prompt to adjust:
-- "Skip deploy" → stops after Phase 4
-- "Frontend only" → skips backend agent, uses mock API
-- "Use Django instead of FastAPI" → swaps Agent A to django-pro
-- "Add Temporal workflows" → adds temporal-python-pro agent in Phase 2
-- "Monorepo" → adjusts file ownership boundaries accordingly

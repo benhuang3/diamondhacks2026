@@ -17,3 +17,208 @@ body {
 body {
   font-feature-settings: "rlig" 1, "calt" 1;
 }
+
+/* ---------- Uiverse-style subtle animated primitives ---------- */
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes gradient-drift {
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+}
+
+@keyframes hero-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(10px, -14px, 0) scale(1.04);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@keyframes countup {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Primary gradient button with hover shimmer — subtle. */
+.btn-gradient {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(
+    135deg,
+    theme("colors.brand.600") 0%,
+    theme("colors.brand.500") 50%,
+    theme("colors.brand.700") 100%
+  );
+  background-size: 200% 200%;
+  animation: gradient-drift 6s ease-in-out infinite;
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 0.08),
+    0 0 0 1px rgb(255 255 255 / 0.08) inset;
+  transition:
+    transform 200ms ease,
+    box-shadow 200ms ease;
+}
+.btn-gradient:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow:
+    0 4px 14px -4px theme("colors.brand.600" / 40%),
+    0 0 0 1px rgb(255 255 255 / 0.12) inset;
+}
+.btn-gradient:active:not(:disabled) {
+  transform: translateY(0);
+}
+.btn-gradient::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    110deg,
+    transparent 30%,
+    rgb(255 255 255 / 0.22) 50%,
+    transparent 70%
+  );
+  background-size: 200% 100%;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  pointer-events: none;
+}
+.btn-gradient:hover:not(:disabled)::before {
+  opacity: 1;
+  animation: shimmer 1.4s linear infinite;
+}
+
+/* Hero background: two soft color blobs drifting behind the headline. */
+.hero-blobs {
+  position: absolute;
+  inset: -40px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 0;
+}
+.hero-blobs::before,
+.hero-blobs::after {
+  content: "";
+  position: absolute;
+  width: 420px;
+  height: 420px;
+  border-radius: 9999px;
+  filter: blur(80px);
+  opacity: 0.55;
+  animation: hero-float 14s ease-in-out infinite;
+}
+.hero-blobs::before {
+  top: -160px;
+  left: -80px;
+  background: radial-gradient(
+    circle at 30% 30%,
+    theme("colors.brand.300"),
+    transparent 65%
+  );
+}
+.hero-blobs::after {
+  top: -120px;
+  right: -120px;
+  background: radial-gradient(
+    circle at 70% 30%,
+    theme("colors.indigo.200"),
+    transparent 65%
+  );
+  animation-delay: -6s;
+}
+
+/* Finding card hover glow (subtle brand ring). */
+.finding-glow {
+  position: relative;
+  transition:
+    transform 200ms ease,
+    box-shadow 250ms ease;
+}
+.finding-glow:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 10px 25px -12px theme("colors.brand.500" / 25%),
+    0 0 0 1px theme("colors.brand.200");
+}
+
+/* Score tile — soft gradient sheen + fade-in for the number. */
+.score-tile {
+  position: relative;
+  overflow: hidden;
+}
+.score-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    140deg,
+    theme("colors.brand.50") 0%,
+    transparent 55%
+  );
+  opacity: 0.7;
+  pointer-events: none;
+}
+.score-number {
+  animation: countup 500ms ease-out both;
+}
+
+/* Scan-running loader: concentric pulses around a center dot. */
+.pulse-loader {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pulse-loader .ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  border: 2px solid theme("colors.brand.500");
+  animation: pulse-ring 2s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.pulse-loader .ring:nth-child(2) {
+  animation-delay: 0.5s;
+}
+.pulse-loader .ring:nth-child(3) {
+  animation-delay: 1s;
+}
+.pulse-loader .core {
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: theme("colors.brand.600");
+  box-shadow: 0 0 18px theme("colors.brand.500" / 60%);
+}

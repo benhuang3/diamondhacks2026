@@ -13,21 +13,27 @@ export function ScoreCard({ scores }: { scores: Record<string, number> }) {
       {entries.map(([k, v]) => (
         <Card
           key={k}
-          className="flex flex-col items-start gap-2 p-5"
+          className="score-tile flex flex-col items-start gap-2 p-5"
         >
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <p className="relative z-10 text-xs font-semibold uppercase tracking-wide text-slate-500">
             {k}
           </p>
-          <div className="flex items-baseline gap-1">
-            <span className={cn("text-4xl font-semibold", scoreColor(v))}>
+          <div className="relative z-10 flex items-baseline gap-1">
+            <span
+              key={v}
+              className={cn(
+                "score-number text-4xl font-semibold",
+                scoreColor(v),
+              )}
+            >
               {v}
             </span>
             <span className="text-sm text-slate-400">/ 100</span>
           </div>
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+          <div className="relative z-10 h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               className={cn(
-                "h-full rounded-full",
+                "h-full rounded-full transition-all duration-700 ease-out",
                 v >= 80
                   ? "bg-emerald-500"
                   : v >= 60

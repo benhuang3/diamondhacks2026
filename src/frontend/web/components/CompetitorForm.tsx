@@ -76,7 +76,7 @@ export function CompetitorForm() {
           disabled={loading}
         />
       </div>
-      <Button type="submit" disabled={loading} size="lg">
+      <Button type="submit" variant="gradient" disabled={loading} size="lg">
         {loading ? (
           <>
             <Loader2 className="h-4 w-4 animate-spin" /> Finding competitors…

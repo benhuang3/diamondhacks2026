@@ -12,6 +12,8 @@ import type { ScanFinding, Report } from "@/lib/types";
 import { FindingsList } from "@/components/FindingsList";
 import { ScoreCard } from "@/components/ScoreCard";
 import { FlowVisualization } from "@/components/FlowVisualization";
+import { ScanLoader } from "@/components/ScanLoader";
+import { ReasoningFeed } from "@/components/ReasoningFeed";
 import {
   Card,
   CardHeader,
@@ -105,11 +107,20 @@ export default function ScanPage() {
               Crawling pages and analyzing DOM — polling every 3 seconds.
             </CardDescription>
           </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <Progress value={pct} />
-            <p className="text-sm text-slate-500">{pct}% complete</p>
+          <CardContent className="flex flex-col items-center gap-5 py-6">
+            <ScanLoader />
+            <div className="flex w-full flex-col gap-2">
+              <Progress value={pct} />
+              <p className="text-center text-sm text-slate-500">
+                {pct}% complete
+              </p>
+            </div>
           </CardContent>
         </Card>
+      )}
+
+      {status?.steps && status.steps.length > 0 && (
+        <ReasoningFeed steps={status.steps} />
       )}
 
       {report && (

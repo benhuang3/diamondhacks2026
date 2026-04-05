@@ -6,7 +6,9 @@ import Link from "next/link";
 import { useCompetitorPolling, getReport } from "@/lib/api";
 import type { Report } from "@/lib/types";
 import { PriceDeltaChart } from "@/components/PriceDeltaChart";
+import { PriceBreakdownChart } from "@/components/PriceBreakdownChart";
 import { ScoreCard } from "@/components/ScoreCard";
+import { ReasoningFeed } from "@/components/ReasoningFeed";
 import {
   Card,
   CardHeader,
@@ -86,6 +88,10 @@ export default function CompetitorReportPage() {
         </Card>
       )}
 
+      {status?.steps && status.steps.length > 0 && (
+        <ReasoningFeed steps={status.steps} />
+      )}
+
       {report && (
         <section className="flex flex-col gap-4">
           <h2 className="text-lg font-semibold text-slate-900">Scores</h2>
@@ -93,9 +99,21 @@ export default function CompetitorReportPage() {
         </section>
       )}
 
-      {competitors.length > 0 && (
-        <PriceDeltaChart competitors={competitors} />
-      )}
+      {(() => {
+        const breakdown = report?.sections.find(
+          (s) => s.title === "Price breakdown by product",
+        );
+        const data =
+          (breakdown?.chart as
+            | { data?: { label: string; value: number; delta?: number | null; is_target?: boolean }[] }
+            | undefined)?.data ?? [];
+        if (data.length === 0) return null;
+        return <PriceBreakdownChart data={data} body={breakdown?.body} />;
+      })()}
+
+      {competitors.some(
+        (c) => c.shipping != null || c.tax != null || c.checkout_total != null,
+      ) && <PriceDeltaChart competitors={competitors} />}
 
       {competitors.length > 0 && (
         <Card>

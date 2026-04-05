@@ -5,6 +5,7 @@ import type {
   ScanRequest,
   ScanCreateResponse,
   ScanStatus,
+  ScanListResponse,
   AnnotationsResponse,
   CompetitorRequest,
   CompetitorCreateResponse,
@@ -94,6 +95,15 @@ export async function getScan(scanId: string): Promise<ScanStatus> {
     return await safeFetch<ScanStatus>(`/scan/${scanId}`);
   } catch {
     return demoScanStatus(scanId);
+  }
+}
+
+export async function listScans(limit = 50): Promise<ScanListResponse> {
+  if (DEMO_MODE) return { scans: [] };
+  try {
+    return await safeFetch<ScanListResponse>(`/scans?limit=${limit}`);
+  } catch {
+    return { scans: [] };
   }
 }
 

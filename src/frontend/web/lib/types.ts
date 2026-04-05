@@ -36,6 +36,16 @@ export interface ScanFinding {
   page_url: string;
 }
 
+export interface ScanStep {
+  step: number;
+  ts: number;
+  source?: string; // "worker" | "claude" | "browser-use"
+  evaluation: string;
+  memory: string;
+  next_goal: string;
+  actions: string[];
+}
+
 export interface ScanStatus {
   scan_id: string;
   status: Status;
@@ -44,12 +54,28 @@ export interface ScanStatus {
   findings_count: number;
   report_id?: string | null;
   error?: string | null;
+  steps?: ScanStep[];
 }
 
 export interface AnnotationsResponse {
   scan_id: string;
   url: string;
   annotations: ScanFinding[];
+}
+
+export interface ScanSummary {
+  scan_id: string;
+  url: string;
+  status: Status;
+  progress: number;
+  findings_count: number;
+  report_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ScanListResponse {
+  scans: ScanSummary[];
 }
 
 export interface CompetitorRequest {
@@ -84,6 +110,7 @@ export interface CompetitorJobStatus {
   competitors: CompetitorResult[];
   report_id?: string | null;
   error?: string | null;
+  steps?: ScanStep[];
 }
 
 export interface ReportSection {

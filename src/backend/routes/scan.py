@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 
-from ..models.scan import ScanCreateResponse, ScanRequest, ScanStatus
-from ..services.scan_service import fetch_scan_status, start_scan
+from ..models.scan import (
+    ScanCreateResponse,
+    ScanListResponse,
+    ScanRequest,
+    ScanStatus,
+)
+from ..services.scan_service import (
+    fetch_scan_list,
+    fetch_scan_status,
+    start_scan,
+)
 from ..workers.scan_worker import run_scan
 
 router = APIRouter(tags=["scan"])
@@ -18,6 +27,14 @@ async def create_scan_endpoint(
     scan_id = await start_scan(req.url, req.max_pages)
     background_tasks.add_task(run_scan, scan_id, req.url, req.max_pages)
     return ScanCreateResponse(scan_id=scan_id, status="pending")
+
+
+@router.get("/scans", response_model=ScanListResponse)
+async def list_scans_endpoint(
+    limit: int = Query(50, ge=1, le=200),
+) -> ScanListResponse:
+    scans = await fetch_scan_list(limit=limit)
+    return ScanListResponse(scans=scans)
 
 
 @router.get("/scan/{scan_id}", response_model=ScanStatus)

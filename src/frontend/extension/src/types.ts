@@ -25,6 +25,16 @@ export interface ScanFinding {
   page_url: string;
 }
 
+export interface ScanStep {
+  step: number;
+  ts: number;
+  source?: string; // "worker" | "claude" | "browser-use"
+  evaluation: string;
+  memory: string;
+  next_goal: string;
+  actions: string[];
+}
+
 export interface ScanStatus {
   scan_id: string;
   status: Status;
@@ -33,6 +43,7 @@ export interface ScanStatus {
   findings_count: number;
   report_id?: string | null;
   error?: string | null;
+  steps?: ScanStep[];
 }
 
 export interface AnnotationsResponse {
@@ -46,13 +57,38 @@ export interface ScanCreateResponse {
   status: Status;
 }
 
+export interface CompetitorResult {
+  id: string;
+  job_id: string;
+  name: string;
+  url: string;
+  price?: number | null;
+  shipping?: number | null;
+  tax?: number | null;
+  discount?: string | null;
+  checkout_total?: number | null;
+  notes: string;
+}
+
+export interface CompetitorJobStatus {
+  job_id: string;
+  status: Status;
+  progress: number;
+  store_url: string;
+  competitors: CompetitorResult[];
+  report_id?: string | null;
+  error?: string | null;
+  steps?: ScanStep[];
+}
+
 // Message payloads
 export type ExtensionMessage =
   | { type: "START_SCAN"; url: string }
   | { type: "SCAN_STATUS"; status: ScanStatus | null }
   | { type: "INJECT_ANNOTATIONS"; annotations: ScanFinding[] }
   | { type: "CLEAR_ANNOTATIONS" }
-  | { type: "GET_STATE" };
+  | { type: "GET_STATE" }
+  | { type: "PING" };
 
 export interface PopupState {
   scanId: string | null;

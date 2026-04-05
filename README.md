@@ -22,12 +22,12 @@ cp .env.example .env
 # Fill in real API keys in .env (never commit .env)
 ```
 
-### 2. Backend (Python + FastAPI + Playwright)
+### 2. Backend (Python + FastAPI + browser-use)
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r src/backend/requirements.txt
-.venv/bin/playwright install chromium
+.venv/bin/browser-use install
 ```
 
 Run:

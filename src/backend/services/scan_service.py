@@ -9,6 +9,7 @@ from src.db.queries import (
     create_scan,
     get_scan,
     list_findings,
+    list_scans,
 )
 
 from ..models.scan import (
@@ -16,7 +17,10 @@ from ..models.scan import (
     BoundingBox,
     ScanFinding,
     ScanStatus,
+    ScanStep,
+    ScanSummary,
 )
+from ..observability import scan_log
 
 
 async def start_scan(url: str, max_pages: int) -> str:
@@ -28,6 +32,7 @@ async def fetch_scan_status(scan_id: str) -> Optional[ScanStatus]:
     if not row:
         return None
     findings_count = await count_findings(scan_id)
+    steps = [ScanStep(**e) for e in scan_log.snapshot(scan_id)]
     return ScanStatus(
         scan_id=str(row.get("id") or row.get("scan_id") or scan_id),
         status=row.get("status", "pending"),
@@ -36,6 +41,7 @@ async def fetch_scan_status(scan_id: str) -> Optional[ScanStatus]:
         findings_count=findings_count,
         report_id=(str(row["report_id"]) if row.get("report_id") else None),
         error=row.get("error"),
+        steps=steps,
     )
 
 
@@ -60,6 +66,23 @@ def _finding_from_row(row: dict, scan_id: str) -> ScanFinding:
         suggestion=row.get("suggestion", ""),
         page_url=row.get("page_url", ""),
     )
+
+
+async def fetch_scan_list(limit: int = 50) -> list[ScanSummary]:
+    rows = await list_scans(limit=limit)
+    return [
+        ScanSummary(
+            scan_id=str(r.get("id") or r.get("scan_id")),
+            url=r.get("url", ""),
+            status=r.get("status", "pending"),
+            progress=float(r.get("progress") or 0.0),
+            findings_count=int(r.get("findings_count") or 0),
+            report_id=(str(r["report_id"]) if r.get("report_id") else None),
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+        )
+        for r in rows
+    ]
 
 
 async def fetch_annotations(scan_id: str) -> Optional[AnnotationsResponse]:

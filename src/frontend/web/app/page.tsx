@@ -15,8 +15,9 @@ import { ArrowRight, Activity, Eye, Zap } from "lucide-react";
 export default function LandingPage() {
   return (
     <div className="flex flex-col gap-10">
-      <section className="flex flex-col gap-6">
-        <div className="max-w-2xl">
+      <section className="relative flex flex-col gap-6">
+        <div className="hero-blobs" aria-hidden="true" />
+        <div className="relative z-10 max-w-2xl">
           <Badge variant="outline" className="mb-4">
             Agentic storefront review
           </Badge>
@@ -30,7 +31,7 @@ export default function LandingPage() {
             to production.
           </p>
         </div>
-        <Card className="max-w-3xl">
+        <Card className="relative z-10 max-w-3xl">
           <CardHeader>
             <CardTitle>Start a new scan</CardTitle>
             <CardDescription>

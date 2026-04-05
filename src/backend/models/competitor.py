@@ -1,6 +1,6 @@
 from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
-from .scan import Status
+from .scan import ScanStep, Status
 from ..security.url_guard import UnsafeURLError, validate_public_url
 
 
@@ -44,3 +44,4 @@ class CompetitorJobStatus(BaseModel):
     competitors: list[CompetitorResult] = []
     report_id: Optional[str] = None
     error: Optional[str] = None
+    steps: list[ScanStep] = []

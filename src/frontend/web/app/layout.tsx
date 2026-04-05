@@ -36,6 +36,12 @@ export default function RootLayout({
                 Scan
               </Link>
               <Link
+                href="/scans"
+                className="text-slate-600 transition-colors hover:text-slate-900"
+              >
+                Scans
+              </Link>
+              <Link
                 href="/competitors"
                 className="text-slate-600 transition-colors hover:text-slate-900"
               >

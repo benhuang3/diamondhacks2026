@@ -128,6 +128,27 @@ async def get_scan(scan_id: str) -> dict | None:
         return _scan_to_dict(row)
 
 
+async def list_scans(limit: int = 50) -> list[dict]:
+    """Most-recent scans first, each with a findings_count."""
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(Scan).order_by(Scan.created_at.desc()).limit(limit)
+        )
+        scans = result.scalars().all()
+        if not scans:
+            return []
+        scan_ids = [s.id for s in scans]
+        count_rows = await session.execute(
+            select(ScanFinding.scan_id, func.count())
+            .where(ScanFinding.scan_id.in_(scan_ids))
+            .group_by(ScanFinding.scan_id)
+        )
+        counts: dict[str, int] = {sid: int(c) for sid, c in count_rows.all()}
+    return [
+        {**_scan_to_dict(s), "findings_count": counts.get(s.id, 0)} for s in scans
+    ]
+
+
 async def update_scan(
     scan_id: str,
     *,
