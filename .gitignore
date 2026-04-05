@@ -3,6 +3,9 @@
 .env.local
 *.key
 
+# uAgents runtime state
+agent1q*_data.json
+
 # Local SQLite databases
 *.db
 *.db-journal
