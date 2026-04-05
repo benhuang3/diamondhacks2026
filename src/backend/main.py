@@ -21,6 +21,7 @@ from .routes.annotations import router as annotations_router
 from .routes.competitors import router as competitors_router
 from .routes.reports import router as reports_router
 from .routes.scan import router as scan_router
+from .security.url_guard import install_egress_guard
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,8 @@ def _parse_cors(origins_raw: str) -> tuple[list[str], list[str]]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     configure_logging(settings.log_level)
+    if settings.ssrf_egress_guard:
+        install_egress_guard()
     try:
         await init_db()
     except Exception as e:  # noqa: BLE001
@@ -61,11 +64,15 @@ def create_app() -> FastAPI:
     exact_origins, regex_origins = _parse_cors(settings.cors_origins)
     allow_origin_regex = "|".join(regex_origins) if regex_origins else None
 
+    # The app is cookie-less and uses no browser-auth credentials, so we
+    # disable allow_credentials. This neutralizes the ``chrome-extension://.*``
+    # regex, since credentialed cross-origin requests are what made that
+    # wildcard dangerous in the first place.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=exact_origins,
         allow_origin_regex=allow_origin_regex,
-        allow_credentials=True,
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -76,6 +83,8 @@ def create_app() -> FastAPI:
             ("POST", "/scan"): (settings.rate_limit_scan_per_min, 60),
             ("POST", "/competitors"): (settings.rate_limit_competitors_per_min, 60),
         },
+        max_buckets=settings.rate_limit_max_buckets,
+        trust_forwarded_for=settings.trust_forwarded_for,
     )
     # Outermost so every request (including rate-limited ones) gets a
     # request_id bound and an access-log line emitted.

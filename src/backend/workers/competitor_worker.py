@@ -13,6 +13,7 @@ from src.db.queries import insert_competitor_result, update_competitor_job
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
 from ..agents import competitor_prompts as prompts
 from ..observability.metrics import metrics
+from ..security.url_guard import UnsafeURLError, validate_public_url
 from .report_generator import generate_competitor_report
 
 log = logging.getLogger(__name__)
@@ -89,13 +90,28 @@ async def _run_demo(job_id: str, store_url: str, prompt: str | None, hint: str |
     await update_competitor_job(job_id, status="done", progress=1.0)
 
 
+def _sanitize_untrusted(s: str | None, *, max_len: int = 2000) -> str:
+    """Strip anything that could punch out of our ``<<<USER_INPUT>>>`` block
+    and cap length. Paired with the system-prompt instruction telling Claude
+    to treat the block contents as data."""
+    if not s:
+        return "(none)"
+    cleaned = (
+        s.replace("<<<USER_INPUT>>>", "")
+        .replace("<<<END_USER_INPUT>>>", "")
+    )
+    # Collapse control chars that might fool log viewers / prompt parsers.
+    cleaned = "".join(c for c in cleaned if c == "\n" or c >= " ")
+    return cleaned[:max_len]
+
+
 async def _run_live(job_id: str, store_url: str, prompt: str | None, hint: str | None) -> None:
     await update_competitor_job(job_id, status="running", progress=0.1)
     client = ClaudeClient()
     discovery_prompt = prompts.COMPETITOR_DISCOVERY_PROMPT.format(
         store_url=store_url,
-        product_hint=hint or "(none)",
-        custom_prompt=prompt or "(none)",
+        product_hint=_sanitize_untrusted(hint, max_len=500),
+        custom_prompt=_sanitize_untrusted(prompt),
     )
     try:
         text = await client.complete(
@@ -106,10 +122,20 @@ async def _run_live(job_id: str, store_url: str, prompt: str | None, hint: str |
             raise DemoFallbackError("no competitors discovered")
         await update_competitor_job(job_id, progress=0.4)
         # In live mode we'd visit each; for Phase 2 we compose pricing from a
-        # second Claude call. Never attempt real checkout.
+        # second Claude call. Never attempt real checkout. Claude-emitted
+        # URLs are validated before persistence so they can't push private
+        # addresses through to the UI / extension.
         for i, c in enumerate(candidates[: settings.max_competitors]):
             name = c.get("name", f"Competitor {i+1}")
-            url = c.get("url", store_url)
+            raw_url = c.get("url", store_url)
+            try:
+                url = validate_public_url(raw_url)
+            except UnsafeURLError as e:
+                log.info(
+                    "Competitor job %s dropping candidate URL %r: %s",
+                    job_id, raw_url, e,
+                )
+                continue
             # fabricate plausible prices deterministically
             base = 25.0 + (hash(name) % 20)
             ship = 0.0 if i % 2 == 0 else 4.99

@@ -182,6 +182,40 @@ async def insert_finding(scan_id: str, finding: dict) -> str:
     return finding_id
 
 
+async def insert_findings_bulk(scan_id: str, findings: list[dict]) -> list[str]:
+    """Insert many findings in a single transaction (one commit, one fsync).
+
+    Returns the generated IDs in input order. Use this from workers that
+    emit batches; :func:`insert_finding` remains for incremental writes.
+    """
+    if not findings:
+        return []
+    rows: list[ScanFinding] = []
+    ids: list[str] = []
+    for f in findings:
+        fid = f.get("id") or _new_id()
+        ids.append(fid)
+        rows.append(
+            ScanFinding(
+                id=fid,
+                scan_id=scan_id,
+                selector=f["selector"],
+                xpath=f.get("xpath"),
+                bounding_box=f.get("bounding_box"),
+                severity=f["severity"],
+                category=f["category"],
+                title=f["title"],
+                description=f["description"],
+                suggestion=f["suggestion"],
+                page_url=f["page_url"],
+            )
+        )
+    async with AsyncSessionLocal() as session:
+        session.add_all(rows)
+        await session.commit()
+    return ids
+
+
 async def list_findings(scan_id: str) -> list[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(

@@ -14,7 +14,7 @@ import random
 from typing import Any
 
 from src.config.settings import settings
-from src.db.queries import insert_finding, update_scan
+from src.db.queries import insert_findings_bulk, update_scan
 
 from ..agents.browser_use_runner import fetch_page_summary
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
@@ -118,11 +118,8 @@ async def _run_demo(scan_id: str, url: str, max_pages: int) -> None:
 
     # pick 6-10 findings deterministically but with slight variance
     k = min(len(DEMO_FINDINGS_TEMPLATE), 6 + (hash(scan_id) % 3))
-    findings = DEMO_FINDINGS_TEMPLATE[:k]
-    for f in findings:
-        f_copy = dict(f)
-        f_copy["page_url"] = url
-        await insert_finding(scan_id, f_copy)
+    batch = [dict(f, page_url=url) for f in DEMO_FINDINGS_TEMPLATE[:k]]
+    await insert_findings_bulk(scan_id, batch)
     await update_scan(scan_id, progress=0.7)
     await asyncio.sleep(0.4)
 
@@ -151,8 +148,8 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
         if not parsed:
             raise DemoFallbackError("no findings parsed from Claude response")
         await update_scan(scan_id, progress=0.65)
-        for item in parsed[:15]:
-            finding = {
+        batch = [
+            {
                 "selector": item.get("selector", "body"),
                 "xpath": item.get("xpath"),
                 "bounding_box": item.get("bounding_box"),
@@ -163,7 +160,9 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
                 "suggestion": item.get("suggestion", ""),
                 "page_url": url,
             }
-            await insert_finding(scan_id, finding)
+            for item in parsed[:15]
+        ]
+        await insert_findings_bulk(scan_id, batch)
         await update_scan(scan_id, progress=0.85)
         await generate_scan_report(scan_id, url)
         await update_scan(scan_id, status="done", progress=1.0)

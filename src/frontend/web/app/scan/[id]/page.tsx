@@ -31,26 +31,19 @@ export default function ScanPage() {
   const [findings, setFindings] = React.useState<ScanFinding[]>([]);
   const [report, setReport] = React.useState<Report | null>(null);
 
+  // Piggyback findings refresh on the scan-status poll: one loop, not two.
+  // ``status.progress`` changes on every backend tick while the scan runs,
+  // and once status reaches done/failed we fetch one last time.
   React.useEffect(() => {
     if (!scanId) return;
     let active = true;
-    const poll = async () => {
-      try {
-        const r = await getAnnotations(scanId);
-        if (!active) return;
-        setFindings(r.annotations);
-      } catch {
-        // ignore; next tick will retry
-      }
-      const s = status?.status;
-      if (!active || s === "done" || s === "failed") return;
-      setTimeout(poll, 3000);
-    };
-    poll();
+    getAnnotations(scanId).then((r) => {
+      if (active) setFindings(r.annotations);
+    });
     return () => {
       active = false;
     };
-  }, [scanId, status?.status]);
+  }, [scanId, status?.progress, status?.status]);
 
   React.useEffect(() => {
     if (status?.report_id) {

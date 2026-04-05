@@ -8,6 +8,7 @@ counter for Prometheus.
 
 from __future__ import annotations
 
+import re
 import time
 import uuid
 
@@ -19,11 +20,18 @@ from ..observability.metrics import metrics
 
 _log = structlog.get_logger("http")
 
+# Keep inbound request IDs to a safe subset so an attacker can't inject
+# newlines, quotes, or JSON delimiters into our structured logs.
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         inbound = request.headers.get("x-request-id", "").strip()
-        request_id = inbound if 0 < len(inbound) <= 128 else uuid.uuid4().hex[:16]
+        if inbound and _REQUEST_ID_RE.match(inbound):
+            request_id = inbound
+        else:
+            request_id = uuid.uuid4().hex[:16]
 
         structlog.contextvars.clear_contextvars()
         structlog.contextvars.bind_contextvars(request_id=request_id)

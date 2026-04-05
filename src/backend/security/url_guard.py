@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
 import socket
+import threading
 from urllib.parse import urlparse
+
+log = logging.getLogger(__name__)
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
@@ -37,8 +41,30 @@ class UnsafeURLError(ValueError):
     """Raised when a URL fails SSRF validation."""
 
 
+def _canonicalize(ip: ipaddress._BaseAddress) -> ipaddress._BaseAddress:
+    """Unwrap IPv4-mapped/compatible IPv6 (e.g. ``::ffff:127.0.0.1`` →
+    ``127.0.0.1``) so private-range checks can't be bypassed via v6 forms."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        # ipv4_compat ("::a.b.c.d") is deprecated but still accepted by stacks.
+        compat = getattr(ip, "ipv4_compatible", None)
+        if compat is not None:
+            return compat
+        sixtofour = getattr(ip, "sixtofour", None)
+        if sixtofour is not None:
+            return sixtofour
+        teredo = getattr(ip, "teredo", None)
+        if teredo is not None:
+            # Teredo embeds the client's public IPv4; check it too.
+            _, client_v4 = teredo
+            return client_v4
+    return ip
+
+
 def _ip_is_disallowed(ip: ipaddress._BaseAddress) -> bool:
     """Reject any non-globally-routable IP."""
+    ip = _canonicalize(ip)
     return (
         ip.is_private
         or ip.is_loopback
@@ -117,3 +143,52 @@ async def resolve_public_url(raw: str) -> str:
             raise UnsafeURLError("url resolves to a non-public address")
 
     return url
+
+
+# ---------------------------------------------------------------------------
+# Process-wide DNS egress guard
+# ---------------------------------------------------------------------------
+# ``resolve_public_url`` only validates at the moment of the check, so a DNS
+# rebind or a 3xx redirect made by Playwright/Browser-Use can still reach a
+# private IP. This guard installs a wrapper around ``socket.getaddrinfo``
+# that filters out any tuple resolving to a disallowed IP, no matter who in
+# the process triggers the lookup (Playwright, httpx, anthropic SDK, etc.).
+
+_guard_lock = threading.Lock()
+_guard_installed = False
+_original_getaddrinfo = None
+
+
+def _filtering_getaddrinfo(host, *args, **kwargs):
+    assert _original_getaddrinfo is not None
+    results = _original_getaddrinfo(host, *args, **kwargs)
+    safe = []
+    for info in results:
+        sockaddr = info[4]
+        addr = sockaddr[0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            safe.append(info)
+            continue
+        if _ip_is_disallowed(ip):
+            continue
+        safe.append(info)
+    if not safe:
+        raise socket.gaierror(
+            socket.EAI_NONAME,
+            f"host {host!r} resolves only to disallowed addresses",
+        )
+    return safe
+
+
+def install_egress_guard() -> None:
+    """Idempotently install the getaddrinfo filter. Safe to call multiple times."""
+    global _guard_installed, _original_getaddrinfo
+    with _guard_lock:
+        if _guard_installed:
+            return
+        _original_getaddrinfo = socket.getaddrinfo
+        socket.getaddrinfo = _filtering_getaddrinfo  # type: ignore[assignment]
+        _guard_installed = True
+        log.info("SSRF egress guard installed (getaddrinfo filter active)")

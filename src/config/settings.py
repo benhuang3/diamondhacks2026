@@ -38,6 +38,16 @@ class Settings(BaseSettings):
     # Anthropic/BrowserUse cost surface on unauthenticated POST endpoints.
     rate_limit_scan_per_min: int = 10
     rate_limit_competitors_per_min: int = 10
+    # Memory cap for the rate limiter: at most this many distinct
+    # (method,path,client_ip) buckets are kept; oldest evicted when full.
+    rate_limit_max_buckets: int = 10_000
+    # When true, use the left-most X-Forwarded-For entry as the client IP
+    # (only safe behind a trusted reverse proxy).
+    trust_forwarded_for: bool = False
+
+    # Install a process-wide getaddrinfo filter that drops private/loopback
+    # IPs. Defense in depth against DNS rebinding and redirect SSRF.
+    ssrf_egress_guard: bool = True
 
 
 settings = Settings()
