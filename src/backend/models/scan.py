@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 from datetime import datetime
+
+from ..security.url_guard import UnsafeURLError, validate_public_url
 
 Severity = Literal["high", "medium", "low"]
 Category = Literal["a11y", "ux", "contrast", "nav"]
@@ -8,8 +10,16 @@ Status = Literal["pending", "running", "done", "failed"]
 
 
 class ScanRequest(BaseModel):
-    url: str
-    max_pages: int = 5
+    url: str = Field(..., max_length=2048)
+    max_pages: int = Field(5, ge=1, le=50)
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, v: str) -> str:
+        try:
+            return validate_public_url(v)
+        except UnsafeURLError as e:
+            raise ValueError(str(e)) from e
 
 
 class ScanCreateResponse(BaseModel):

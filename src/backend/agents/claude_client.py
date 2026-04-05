@@ -13,6 +13,8 @@ from typing import Optional
 
 from src.config.settings import settings
 
+from ..observability.metrics import metrics
+
 log = logging.getLogger(__name__)
 
 
@@ -73,10 +75,12 @@ class ClaudeClient:
                     parts.append(text)
             return "\n".join(parts).strip()
 
+        metrics.inc("claude_calls_total", model=self.model)
         try:
             return await asyncio.to_thread(_call)
         except DemoFallbackError:
             raise
         except Exception as e:  # noqa: BLE001
+            metrics.inc("claude_call_failures_total", model=self.model)
             log.warning("Claude call failed, falling back to demo: %s", e)
             raise DemoFallbackError(str(e)) from e

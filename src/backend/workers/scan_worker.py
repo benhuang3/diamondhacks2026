@@ -19,6 +19,8 @@ from src.db.queries import insert_finding, update_scan
 from ..agents.browser_use_runner import fetch_page_summary
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
 from ..agents import accessibility_prompts as prompts
+from ..observability.metrics import metrics
+from ..security.url_guard import UnsafeURLError, resolve_public_url
 from .report_generator import generate_scan_report
 
 log = logging.getLogger(__name__)
@@ -130,6 +132,8 @@ async def _run_demo(scan_id: str, url: str, max_pages: int) -> None:
 
 async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
     await update_scan(scan_id, status="running", progress=0.1)
+    # DNS-level SSRF check right before we actually fetch.
+    await resolve_public_url(url)
     snapshot = await fetch_page_summary(url)
     await update_scan(scan_id, progress=0.35)
 
@@ -137,7 +141,7 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
     prompt = prompts.SCAN_FINDINGS_PROMPT.format(
         url=url,
         title=snapshot.get("title", ""),
-        elements=json.dumps(snapshot.get("interactive_elements", []))[:4000],
+        elements=_serialize_elements(snapshot.get("interactive_elements", [])),
         missing_alt=snapshot.get("missing_alt_images", 0),
         low_contrast=snapshot.get("low_contrast_count", 0),
     )
@@ -168,6 +172,28 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
         await _run_demo(scan_id, url, max_pages)
 
 
+_MAX_ELEMENTS_FOR_PROMPT = 40
+_MAX_ELEMENTS_SERIALIZED_CHARS = 4000
+
+
+def _serialize_elements(elements: Any) -> str:
+    """Produce a bounded but still-valid JSON array of interactive elements.
+
+    The previous implementation did ``json.dumps(...)[:4000]``, which
+    corrupts the trailing tokens and ships malformed JSON to Claude. We
+    instead drop elements from the tail until the serialized payload fits.
+    """
+    if not isinstance(elements, list):
+        return "[]"
+    items = list(elements[:_MAX_ELEMENTS_FOR_PROMPT])
+    while items:
+        encoded = json.dumps(items, ensure_ascii=False)
+        if len(encoded) <= _MAX_ELEMENTS_SERIALIZED_CHARS:
+            return encoded
+        items.pop()
+    return "[]"
+
+
 def _extract_json_array(text: str) -> list[dict[str, Any]]:
     text = text.strip()
     # try fenced block first
@@ -195,13 +221,24 @@ def _extract_json_array(text: str) -> list[dict[str, Any]]:
 
 async def run_scan(scan_id: str, url: str, max_pages: int) -> None:
     """Entry point called from FastAPI BackgroundTasks."""
+    metrics.inc("scans_started_total", mode="demo" if is_demo_mode() else "live")
     try:
         if is_demo_mode():
             await _run_demo(scan_id, url, max_pages)
         else:
             await _run_live(scan_id, url, max_pages)
+        metrics.inc("scans_completed_total")
+    except UnsafeURLError as e:
+        log.warning("Scan %s rejected unsafe URL: %s", scan_id, e)
+        metrics.inc("ssrf_rejections_total", source="scan_worker")
+        metrics.inc("scans_failed_total", reason="ssrf")
+        try:
+            await update_scan(scan_id, status="failed", error=str(e), progress=1.0)
+        except Exception:  # noqa: BLE001
+            log.exception("Failed to mark scan %s as failed", scan_id)
     except Exception as e:  # noqa: BLE001
         log.exception("Scan %s failed: %s", scan_id, e)
+        metrics.inc("scans_failed_total", reason="exception")
         try:
             await update_scan(scan_id, status="failed", error=str(e), progress=1.0)
         except Exception:  # noqa: BLE001

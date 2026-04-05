@@ -12,6 +12,7 @@ from src.db.queries import insert_competitor_result, update_competitor_job
 
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
 from ..agents import competitor_prompts as prompts
+from ..observability.metrics import metrics
 from .report_generator import generate_competitor_report
 
 log = logging.getLogger(__name__)
@@ -160,13 +161,19 @@ async def run_competitor_job(
     job_id: str, store_url: str, prompt: str | None, hint: str | None
 ) -> None:
     """Entry point called from FastAPI BackgroundTasks."""
+    metrics.inc(
+        "competitor_jobs_started_total",
+        mode="demo" if is_demo_mode() else "live",
+    )
     try:
         if is_demo_mode():
             await _run_demo(job_id, store_url, prompt, hint)
         else:
             await _run_live(job_id, store_url, prompt, hint)
+        metrics.inc("competitor_jobs_completed_total")
     except Exception as e:  # noqa: BLE001
         log.exception("Competitor job %s failed: %s", job_id, e)
+        metrics.inc("competitor_jobs_failed_total", reason="exception")
         try:
             await update_competitor_job(job_id, status="failed", error=str(e), progress=1.0)
         except Exception:  # noqa: BLE001

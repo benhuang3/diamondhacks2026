@@ -1,12 +1,21 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal, Optional
 from .scan import Status
+from ..security.url_guard import UnsafeURLError, validate_public_url
 
 
 class CompetitorRequest(BaseModel):
-    store_url: str
-    custom_prompt: Optional[str] = None
-    product_hint: Optional[str] = None
+    store_url: str = Field(..., max_length=2048)
+    custom_prompt: Optional[str] = Field(None, max_length=2000)
+    product_hint: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("store_url")
+    @classmethod
+    def _validate_store_url(cls, v: str) -> str:
+        try:
+            return validate_public_url(v)
+        except UnsafeURLError as e:
+            raise ValueError(str(e)) from e
 
 
 class CompetitorCreateResponse(BaseModel):

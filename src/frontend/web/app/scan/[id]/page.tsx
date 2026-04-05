@@ -33,8 +33,24 @@ export default function ScanPage() {
 
   React.useEffect(() => {
     if (!scanId) return;
-    getAnnotations(scanId).then((r) => setFindings(r.annotations));
-  }, [scanId]);
+    let active = true;
+    const poll = async () => {
+      try {
+        const r = await getAnnotations(scanId);
+        if (!active) return;
+        setFindings(r.annotations);
+      } catch {
+        // ignore; next tick will retry
+      }
+      const s = status?.status;
+      if (!active || s === "done" || s === "failed") return;
+      setTimeout(poll, 3000);
+    };
+    poll();
+    return () => {
+      active = false;
+    };
+  }, [scanId, status?.status]);
 
   React.useEffect(() => {
     if (status?.report_id) {

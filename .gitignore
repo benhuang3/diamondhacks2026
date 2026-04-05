@@ -3,6 +3,12 @@
 .env.local
 *.key
 
+# Local SQLite databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # Python
 __pycache__/
 *.py[cod]

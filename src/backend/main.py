@@ -8,10 +8,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
+from src.config.logging import configure_logging
 from src.config.settings import settings
 from src.db.client import init_db
 
+from .middleware.rate_limit import RateLimitMiddleware
+from .middleware.request_context import RequestContextMiddleware
+from .observability.metrics import metrics
 from .routes.annotations import router as annotations_router
 from .routes.competitors import router as competitors_router
 from .routes.reports import router as reports_router
@@ -42,6 +47,7 @@ def _parse_cors(origins_raw: str) -> tuple[list[str], list[str]]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    configure_logging(settings.log_level)
     try:
         await init_db()
     except Exception as e:  # noqa: BLE001
@@ -64,9 +70,24 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.add_middleware(
+        RateLimitMiddleware,
+        rules={
+            ("POST", "/scan"): (settings.rate_limit_scan_per_min, 60),
+            ("POST", "/competitors"): (settings.rate_limit_competitors_per_min, 60),
+        },
+    )
+    # Outermost so every request (including rate-limited ones) gets a
+    # request_id bound and an access-log line emitted.
+    app.add_middleware(RequestContextMiddleware)
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics_endpoint() -> str:
+        return metrics.render_prometheus()
 
     app.include_router(scan_router)
     app.include_router(competitors_router)

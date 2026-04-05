@@ -34,5 +34,10 @@ class Settings(BaseSettings):
     # Force demo mode regardless of ANTHROPIC_API_KEY.
     demo_mode: bool = False
 
+    # Rate limits (per client IP, per 60s window). These protect the
+    # Anthropic/BrowserUse cost surface on unauthenticated POST endpoints.
+    rate_limit_scan_per_min: int = 10
+    rate_limit_competitors_per_min: int = 10
+
 
 settings = Settings()

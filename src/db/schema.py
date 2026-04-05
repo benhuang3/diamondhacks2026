@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
@@ -45,6 +46,8 @@ class Scan(Base):
         nullable=False,
     )
 
+    __table_args__ = (Index("idx_scans_status", "status"),)
+
 
 class ScanFinding(Base):
     __tablename__ = "scan_findings"
@@ -65,6 +68,8 @@ class ScanFinding(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+    __table_args__ = (Index("idx_scan_findings_scan_id", "scan_id"),)
 
 
 class CompetitorJob(Base):
@@ -88,6 +93,8 @@ class CompetitorJob(Base):
         nullable=False,
     )
 
+    __table_args__ = (Index("idx_competitor_jobs_status", "status"),)
+
 
 class CompetitorResult(Base):
     __tablename__ = "competitor_results"
@@ -109,6 +116,8 @@ class CompetitorResult(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
+    __table_args__ = (Index("idx_competitor_results_job_id", "job_id"),)
+
 
 class Report(Base):
     __tablename__ = "reports"
@@ -122,4 +131,9 @@ class Report(Base):
     recommendations: Mapped[list] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("idx_reports_parent_id", "parent_id"),
+        Index("idx_reports_kind", "kind"),
     )
