@@ -42,3 +42,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Runtime log output
+logs.txt

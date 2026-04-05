@@ -52,6 +52,13 @@ class ScanStep(BaseModel):
     step: int
     ts: float = 0.0
     source: str = "worker"  # "worker" | "claude" | "browser-use"
+    # Groups entries into separate UI panels. Empty string goes to the
+    # main panel. Used to show each parallel agent in its own window.
+    lane: str = ""
+    # Live-session URL from browser-use cloud. Populated on the first
+    # step of a cloud task so the UI can render a "watch live" link per
+    # lane. Empty/None everywhere else.
+    live_url: str = ""
     evaluation: str = ""
     memory: str = ""
     next_goal: str = ""

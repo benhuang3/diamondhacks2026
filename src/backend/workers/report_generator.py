@@ -60,6 +60,63 @@ def _category_chart(findings: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _per_page_section(
+    findings: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Group findings by page_url and render a per-page breakdown section.
+
+    Returns None if only one distinct page_url is present (or none at all).
+    """
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for f in findings:
+        page_url = f.get("page_url") or ""
+        if not page_url:
+            continue
+        groups.setdefault(page_url, []).append(f)
+
+    if len(groups) <= 1:
+        return None
+
+    def _counts(items: list[dict[str, Any]]) -> dict[str, int]:
+        c = {"high": 0, "medium": 0, "low": 0}
+        for f in items:
+            sev = f.get("severity", "low")
+            if sev in c:
+                c[sev] += 1
+        return c
+
+    ranked = sorted(
+        groups.items(),
+        key=lambda kv: (len(kv[1]), _counts(kv[1])["high"]),
+        reverse=True,
+    )
+
+    body_lines: list[str] = []
+    chart_data: list[dict[str, Any]] = []
+    for page_url, items in ranked:
+        counts = _counts(items)
+        total = len(items)
+        body_lines.append(
+            f"- **{page_url}** — {total} findings "
+            f"({counts['high']} high, {counts['medium']} medium, "
+            f"{counts['low']} low)"
+        )
+        for f in items[:2]:
+            body_lines.append(f"  - ▸ {f.get('title', '')}")
+        label = page_url if len(page_url) <= 40 else page_url[:37] + "..."
+        chart_data.append({"label": label, "value": total})
+
+    return {
+        "title": "Per-page findings",
+        "body": "\n".join(body_lines),
+        "chart": {
+            "type": "bar",
+            "data": chart_data,
+            "config": {"xKey": "label", "yKey": "value"},
+        },
+    }
+
+
 async def generate_scan_report(scan_id: str, url: str = "") -> str:
     findings = await list_findings(scan_id)
     scores = _score_from_findings(findings)
@@ -92,6 +149,10 @@ async def generate_scan_report(scan_id: str, url: str = "") -> str:
         },
     ]
 
+    per_page_section = _per_page_section(findings)
+    if per_page_section is not None:
+        sections.append(per_page_section)
+
     recommendations = [
         f.get("suggestion", "")
         for f in findings
@@ -122,24 +183,26 @@ async def generate_competitor_report(
     *,
     synthesis: dict | None = None,
     price_table: list[dict[str, Any]] | None = None,
+    shared_products: list[dict[str, Any]] | None = None,
 ) -> str:
     competitors = await list_competitor_results(job_id)
 
     # Build numeric chart series, filtering missing/null values so we never
     # chart placeholder zeros.
+    def _total_or_price(c: dict[str, Any]) -> float | None:
+        t = c.get("checkout_total")
+        if isinstance(t, (int, float)):
+            return float(t)
+        p = c.get("price")
+        if isinstance(p, (int, float)):
+            return float(p)
+        return None
+
     price_points = [
-        {"label": c.get("name", "?"), "value": float(c.get("checkout_total"))}
+        {"label": c.get("name", "?"), "value": v}
         for c in competitors
-        if isinstance(c.get("checkout_total"), (int, float))
+        if (v := _total_or_price(c)) is not None
     ]
-    # If checkout_total isn't populated (new text-only snapshot pipeline),
-    # fall back to featured price so the chart still has something useful.
-    if not price_points:
-        price_points = [
-            {"label": c.get("name", "?"), "value": float(c.get("price"))}
-            for c in competitors
-            if isinstance(c.get("price"), (int, float))
-        ]
     shipping_points = [
         {"label": c.get("name", "?"), "value": float(c.get("shipping"))}
         for c in competitors
@@ -224,76 +287,244 @@ async def generate_competitor_report(
 
     sections: list[dict[str, Any]] = []
 
-    # Per-product price breakdown — biggest |delta vs. your store| first.
-    if price_table:
-        pt_chart_data: list[dict[str, Any]] = []
-        for row in price_table:
-            if not isinstance(row.get("price"), (int, float)):
-                continue
-            label = f"{row.get('store', '?')}: {row.get('product', '') or '(unnamed)'}"
-            if len(label) > 60:
-                label = label[:57] + "…"
-            pt_chart_data.append(
+    # Price matrix: top-3 shared products × competitors. Each cell is the
+    # price we either cart-walked (for the primary product) or observed
+    # in passing (for the other two).
+    if shared_products and competitors:
+        product_names = [
+            str(p.get("name", "")).strip()
+            for p in shared_products[:3]
+            if p.get("name")
+        ]
+        if product_names:
+            matrix_rows: list[dict[str, Any]] = []
+            for c in competitors:
+                row: dict[str, Any] = {
+                    "competitor": c.get("name", "?"),
+                    "url": c.get("url", ""),
+                    "prices": [None] * len(product_names),
+                }
+                # Cart-walked product (always slot 0 since cart_hint was
+                # built from shared_products[0]).
+                primary_price = c.get("price")
+                if isinstance(primary_price, (int, float)):
+                    row["prices"][0] = float(primary_price)
+                # Ancillary prices live in notes' raw data — we need to
+                # read them from the raw_data column. Fall back gracefully
+                # if the column isn't populated.
+                raw = c.get("raw_data") or {}
+                opp = raw.get("other_product_prices") or [] if isinstance(raw, dict) else []
+                if isinstance(opp, list):
+                    for entry in opp:
+                        if not isinstance(entry, dict):
+                            continue
+                        entry_name = str(entry.get("product", "")).strip().lower()
+                        entry_price = entry.get("price")
+                        if not isinstance(entry_price, (int, float)):
+                            continue
+                        # Require a non-trivial string to guard against
+                        # false-positive substring matches (e.g. "w" in
+                        # "wallet") — at least 4 chars AND at least one
+                        # full word overlap with the product name.
+                        if len(entry_name) < 4:
+                            continue
+                        entry_words = {
+                            w for w in entry_name.split() if len(w) >= 4
+                        }
+                        for idx, pname in enumerate(product_names):
+                            pn_lower = pname.lower()
+                            if (
+                                idx == 0
+                                and row["prices"][0] is not None
+                            ):
+                                continue
+                            pn_words = {
+                                w for w in pn_lower.split() if len(w) >= 4
+                            }
+                            # Match when the names share at least one
+                            # meaningful word AND one is a substring of
+                            # the other (keeps "wallet" → "bifold wallet"
+                            # but drops "w" → "wallet").
+                            substring_match = (
+                                pn_lower in entry_name
+                                or entry_name in pn_lower
+                            )
+                            word_overlap = bool(entry_words & pn_words)
+                            if substring_match and word_overlap:
+                                row["prices"][idx] = float(entry_price)
+                                break
+                matrix_rows.append(row)
+
+            # Markdown body: small ASCII-aligned preview.
+            def _fmt(p: Any) -> str:
+                return f"${float(p):.2f}" if isinstance(p, (int, float)) else "—"
+
+            header = " | ".join(["Competitor"] + [n[:28] for n in product_names])
+            divider = " | ".join(["---"] * (len(product_names) + 1))
+            lines = [header, divider]
+            for r in matrix_rows:
+                lines.append(
+                    " | ".join(
+                        [str(r["competitor"])[:32]]
+                        + [_fmt(p) for p in r["prices"]]
+                    )
+                )
+            body_md = "\n".join(lines)
+
+            sections.append(
                 {
-                    "label": label,
-                    "value": float(row["price"]),
-                    "delta": (
-                        float(row["delta_vs_target"])
-                        if isinstance(row.get("delta_vs_target"), (int, float))
-                        else None
-                    ),
-                    "is_target": bool(row.get("is_target")),
+                    "title": "Price matrix",
+                    "body": body_md,
+                    "chart": {
+                        "type": "matrix",
+                        "data": {
+                            "product_names": product_names,
+                            "rows": matrix_rows,
+                        },
+                        "config": {},
+                    },
                 }
             )
 
-        # Build a readable markdown body summarizing the biggest gaps.
-        deltas = [
-            r for r in price_table
-            if not r.get("is_target")
-            and isinstance(r.get("delta_vs_target"), (int, float))
+    # Top-of-report context: which product types we compared across.
+    if shared_products:
+        bullets = [
+            f"- **{p.get('name', '?')}** "
+            f"({int(p.get('match_likelihood', 50))}% shared) — "
+            f"{p.get('description', '')}"
+            for p in shared_products[:3]
         ]
-        if deltas:
-            top = deltas[:3]
-            body_lines = [
-                "Biggest per-product price gaps vs. your featured product:",
-                "",
-            ]
-            for r in top:
-                d = r["delta_vs_target"]
-                arrow = "▲" if d > 0 else "▼"
-                body_lines.append(
-                    f"- {arrow} **${abs(d):.2f}** "
-                    f"— {r['store']} {r.get('product') or '(unnamed)'} "
-                    f"@ ${r['price']:.2f}"
-                )
-            body_md = "\n".join(body_lines)
-        else:
-            body_md = (
-                "Showing per-product featured prices. Your store's "
-                "featured_price wasn't captured, so deltas aren't shown."
-            )
-
+        top = shared_products[0].get("name", "?") if shared_products else "?"
         sections.append(
             {
-                "title": "Price breakdown by product",
+                "title": "Shared product categories",
+                "body": (
+                    "The 3 product types the target store and competitors "
+                    f"all likely carry (cart walks targeted the top one — "
+                    f"**{top}**):\n\n" + "\n".join(bullets)
+                ),
+                "chart": None,
+            }
+        )
+
+    # Extra fees (shipping + tax) per competitor — the cumulative delta
+    # each competitor adds on top of their listed price. Product price
+    # itself is shown in the "Cost breakdown" section below.
+    fees_chart_data: list[dict[str, Any]] = []
+    for c in competitors:
+        ship_v = c.get("shipping") if isinstance(c.get("shipping"), (int, float)) else None
+        tax_v = c.get("tax") if isinstance(c.get("tax"), (int, float)) else None
+        if ship_v is None and tax_v is None:
+            continue
+        ship_f = float(ship_v or 0.0)
+        tax_f = float(tax_v or 0.0)
+        fees_total = ship_f + tax_f
+        label = str(c.get("name", "?"))[:40]
+        fees_chart_data.append(
+            {
+                "label": label,
+                "value": fees_total,
+                "shipping": ship_f,
+                "tax": tax_f,
+            }
+        )
+
+    if fees_chart_data:
+        fees_chart_data.sort(key=lambda r: r["value"], reverse=True)
+        top_fees = fees_chart_data[:3]
+        body_lines = [
+            "Cumulative shipping + tax added to the cart subtotal "
+            "(largest fee stack first):",
+            "",
+        ]
+        for r in top_fees:
+            body_lines.append(
+                f"- **{r['label']}** — **${r['value']:.2f}** "
+                f"(${r['shipping']:.2f} shipping + ${r['tax']:.2f} tax)"
+            )
+        body_md = "\n".join(body_lines)
+        sections.append(
+            {
+                "title": "Extra fees (shipping + tax)",
                 "body": body_md,
                 "chart": {
                     "type": "bar",
-                    "data": pt_chart_data,
+                    "data": fees_chart_data,
                     "config": {
                         "xKey": "label",
                         "yKey": "value",
-                        "deltaKey": "delta",
-                        "targetKey": "is_target",
+                        "shippingKey": "shipping",
+                        "taxKey": "tax",
                     },
                 },
             }
         )
 
+    # Cost breakdown: one stacked-bar row per competitor (subtotal + shipping
+    # + tax, with derived discount savings).
+    breakdown_data: list[dict[str, Any]] = []
+    for c in competitors:
+        price_v = c.get("price") if isinstance(c.get("price"), (int, float)) else 0
+        ship_v = (
+            c.get("shipping") if isinstance(c.get("shipping"), (int, float)) else 0
+        )
+        tax_v = c.get("tax") if isinstance(c.get("tax"), (int, float)) else 0
+        total_v = (
+            c.get("checkout_total")
+            if isinstance(c.get("checkout_total"), (int, float))
+            else 0
+        )
+        discount_value = max(
+            0.0,
+            float(price_v) + float(ship_v) + float(tax_v) - float(total_v),
+        )
+        breakdown_data.append(
+            {
+                "label": c.get("name", "?"),
+                "subtotal": float(price_v),
+                "shipping": float(ship_v),
+                "tax": float(tax_v),
+                "discount": -float(discount_value),
+                "total": float(total_v),
+            }
+        )
+
+    if breakdown_data:
+        ranked = sorted(
+            breakdown_data, key=lambda r: r.get("total") or 0.0, reverse=True
+        )[:3]
+        breakdown_lines = ["Top competitors by checkout total:", ""]
+        for r in ranked:
+            disc = -r["discount"]
+            breakdown_lines.append(
+                f"- **{r['label']}** — ${r['total']:.2f} = "
+                f"${r['subtotal']:.2f} + ${r['shipping']:.2f} ship + "
+                f"${r['tax']:.2f} tax (saved ${disc:.2f})"
+            )
+        breakdown_body = "\n".join(breakdown_lines)
+    else:
+        breakdown_body = "No cost breakdown data available."
+
+    sections.append(
+        {
+            "title": "Cost breakdown",
+            "body": breakdown_body,
+            "chart": {
+                "type": "bar",
+                "data": breakdown_data,
+                "config": {
+                    "xKey": "label",
+                    "stackKeys": ["subtotal", "shipping", "tax"],
+                    "totalKey": "total",
+                },
+            },
+        }
+    )
+
     sections.extend(
         [
             {
-                "title": "Checkout total comparison",
+                "title": "Checkout total by competitor",
                 "body": "Total cost at cart (price + shipping + tax − discount).",
                 "chart": price_chart,
             },

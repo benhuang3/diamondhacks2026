@@ -16,12 +16,16 @@ from typing import Any
 from src.config.settings import settings
 from src.db.queries import insert_findings_bulk, update_scan
 
-from ..agents.browser_use_runner import fetch_page_summary
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
+from ..agents.page_crawler import crawl_storefront
 from ..agents import accessibility_prompts as prompts
 from ..observability import scan_log
 from ..observability.metrics import metrics
-from ..security.url_guard import UnsafeURLError, resolve_public_url
+from ..security.url_guard import (
+    UnsafeURLError,
+    resolve_public_url,
+    validate_public_url,
+)
 from .report_generator import generate_scan_report
 
 log = logging.getLogger(__name__)
@@ -140,55 +144,171 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
     scan_log.append(scan_id, {"step": 0, "next_goal": f"validating {url}"})
     # DNS-level SSRF check right before we actually fetch.
     await resolve_public_url(url)
-    snapshot = await fetch_page_summary(url, scan_id=scan_id)
-    await update_scan(scan_id, progress=0.35)
+
+    await update_scan(scan_id, progress=0.2)
     scan_log.append(
         scan_id,
         {
             "step": 100,
-            "source": "claude",
-            "next_goal": "analyzing page with Claude",
-            "evaluation": f"captured {len(snapshot.get('interactive_elements', []))} elements",
+            "source": "browser-use",
+            "lane": "crawl",
+            "next_goal": f"crawling up to {max_pages} pages from {url}",
+        },
+    )
+    pages = await crawl_storefront(
+        url, max_pages=max_pages, scan_id=scan_id, lane="crawl"
+    )
+
+    page_summary = ", ".join(
+        f"{p.get('kind', 'other')}:{p.get('url', '')}" for p in pages[:8]
+    )
+    await update_scan(scan_id, progress=0.35)
+    scan_log.append(
+        scan_id,
+        {
+            "step": 101,
+            "source": "browser-use",
+            "lane": "crawl",
+            "next_goal": f"crawl done: {len(pages)} page(s) visited",
+            "evaluation": page_summary,
         },
     )
 
+    # If every page is a fallback, still run Claude against just the home
+    # page so the user gets *something* usable back.
+    all_fallback = all(bool(p.get("is_fallback")) for p in pages)
+    if all_fallback:
+        # Keep only the first (home / input URL) page to run through Claude.
+        pages_to_analyze = [pages[0]]
+    else:
+        pages_to_analyze = [p for p in pages if not p.get("is_fallback")]
+
     client = ClaudeClient()
-    prompt = prompts.SCAN_FINDINGS_PROMPT.format(
-        url=url,
-        title=snapshot.get("title", ""),
-        elements=_serialize_elements(snapshot.get("interactive_elements", [])),
-        missing_alt=snapshot.get("missing_alt_images", 0),
-        low_contrast=snapshot.get("low_contrast_count", 0),
-    )
+    sem = asyncio.Semaphore(2)
+    per_page_cap = 15
+    global_cap = per_page_cap * max(1, len(pages_to_analyze))
+
+    def _safe_page_url(raw: str) -> str:
+        """Re-validate URLs the crawler returned before we stamp them on
+        findings (they become sidebar navigation targets). browser-use's
+        allowed_domains is the primary guard; this is belt-and-suspenders."""
+        if not raw:
+            return url
+        try:
+            return validate_public_url(raw)
+        except UnsafeURLError as e:
+            log.info(
+                "Scan %s dropping crawler url %r: %s; using root",
+                scan_id, raw, e,
+            )
+            return url
+
+    async def _analyze_page(
+        idx: int, page: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        page_url = _safe_page_url(page.get("url") or "")
+        kind = page.get("kind", "other")
+        title = page.get("title", "") or ""
+        prompt_text = prompts.SCAN_FINDINGS_PROMPT_PER_PAGE.format(
+            url=page_url,
+            kind=kind,
+            title=title,
+            elements=_serialize_elements(page.get("interactive_elements", [])),
+            missing_alt=page.get("missing_alt_images", 0),
+            low_contrast=page.get("low_contrast_count", 0),
+        )
+        start_step = 200 + idx * 2
+        done_step = start_step + 1
+        async with sem:
+            scan_log.append(
+                scan_id,
+                {
+                    "step": start_step,
+                    "source": "claude",
+                    "lane": "claude",
+                    "next_goal": f"analyzing {kind} page {page_url}",
+                },
+            )
+            try:
+                text = await client.complete(
+                    prompt_text,
+                    system=prompts.SYSTEM_SCAN,
+                    max_tokens=2048,
+                )
+            except DemoFallbackError as e:
+                log.info(
+                    "Scan %s Claude call failed for %s: %s",
+                    scan_id, page_url, e,
+                )
+                scan_log.append(
+                    scan_id,
+                    {
+                        "step": done_step,
+                        "lane": "claude",
+                        "next_goal": f"findings on {page_url} (skipped)",
+                        "evaluation": str(e)[:200],
+                    },
+                )
+                return []
+            parsed = _extract_json_array(text)
+            items: list[dict[str, Any]] = []
+            for item in (parsed or [])[:per_page_cap]:
+                items.append(
+                    {
+                        "selector": item.get("selector", "body"),
+                        "xpath": item.get("xpath"),
+                        "bounding_box": item.get("bounding_box"),
+                        "severity": item.get("severity", "medium"),
+                        "category": item.get("category", "ux"),
+                        "title": item.get("title", "Finding"),
+                        "description": item.get("description", ""),
+                        "suggestion": item.get("suggestion", ""),
+                        "page_url": page_url,
+                    }
+                )
+            scan_log.append(
+                scan_id,
+                {
+                    "step": done_step,
+                    "lane": "claude",
+                    "next_goal": (
+                        f"findings on {page_url} "
+                        f"({len(items)} found)"
+                    ),
+                },
+            )
+            return items
+
     try:
-        text = await client.complete(prompt, system=prompts.SYSTEM_SCAN, max_tokens=2048)
-        parsed = _extract_json_array(text)
-        if not parsed:
-            raise DemoFallbackError("no findings parsed from Claude response")
-        await update_scan(scan_id, progress=0.65)
-        batch = [
-            {
-                "selector": item.get("selector", "body"),
-                "xpath": item.get("xpath"),
-                "bounding_box": item.get("bounding_box"),
-                "severity": item.get("severity", "medium"),
-                "category": item.get("category", "ux"),
-                "title": item.get("title", "Finding"),
-                "description": item.get("description", ""),
-                "suggestion": item.get("suggestion", ""),
-                "page_url": url,
-            }
-            for item in parsed[:15]
-        ]
-        await insert_findings_bulk(scan_id, batch)
+        results = await asyncio.gather(
+            *(
+                _analyze_page(i, p)
+                for i, p in enumerate(pages_to_analyze)
+            )
+        )
+        all_findings: list[dict[str, Any]] = []
+        for findings in results:
+            all_findings.extend(findings)
+            if len(all_findings) >= global_cap:
+                break
+        all_findings = all_findings[:global_cap]
+        if not all_findings:
+            raise DemoFallbackError("no findings parsed from Claude responses")
+        await insert_findings_bulk(scan_id, all_findings)
         await update_scan(scan_id, progress=0.85)
         scan_log.append(
             scan_id,
-            {"step": 101, "next_goal": f"persisted {len(batch)} findings"},
+            {
+                "step": 102,
+                "next_goal": (
+                    f"persisted {len(all_findings)} findings "
+                    f"across {len(pages_to_analyze)} page(s)"
+                ),
+            },
         )
         await generate_scan_report(scan_id, url)
         await update_scan(scan_id, status="done", progress=1.0)
-        scan_log.append(scan_id, {"step": 102, "next_goal": "done"})
+        scan_log.append(scan_id, {"step": 103, "next_goal": "done"})
     except DemoFallbackError as e:
         log.info("Falling back to demo for scan %s: %s", scan_id, e)
         await _run_demo(scan_id, url, max_pages)

@@ -27,7 +27,24 @@ class Settings(BaseSettings):
     browser_use_headless: bool = True
     browser_use_timeout_ms: int = 30000
     max_scan_pages: int = 5
-    max_competitors: int = 5
+    # Each competitor drives a full browser-use cloud checkout walk
+    # (~60-90s, paid tokens). The live flow compares the target store
+    # against the first N competitors that successfully reach their cart
+    # pages; remaining candidates in the pool are cancelled once N is hit.
+    max_competitors: int = 4
+    # LLM the browser-use cloud task uses to drive navigation. Picked from
+    # browser-use's model catalog; "browser-use-2.0" is their tuned default.
+    browser_use_cloud_model: str = "browser-use-2.0"
+    # When set, competitor cart walks on detected Shopify stores replay
+    # this pre-recorded skill (deterministic clicks, no LLM planning →
+    # ~$0 marginal cost vs. the full agent loop). Create a skill via
+    # browser-use dashboard or SDK, then paste its id here.
+    shopify_skill_id: str = ""
+    # When true, run competitor discovery through a browser-use cloud
+    # agent that actually searches + verifies URLs (streaming reasoning).
+    # Default False — the live flow uses Claude to pick the top 2 most
+    # similar storefronts (fast + cheap) and then browser-use scrapes them.
+    competitor_discovery_via_agent: bool = False
 
     log_level: str = "INFO"
 

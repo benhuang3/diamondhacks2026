@@ -1,6 +1,6 @@
 import * as React from "react";
 import { createRoot } from "react-dom/client";
-import type { ExtensionMessage, ScanStatus, ScanStep, PopupState } from "./types";
+import type { ExtensionMessage, ScanStatus, PopupState } from "./types";
 
 function sendMessage<T = unknown>(msg: ExtensionMessage): Promise<T> {
   return new Promise((resolve) => {
@@ -177,8 +177,20 @@ function Popup() {
         </div>
       )}
 
-      {state.status?.steps && state.status.steps.length > 0 && (
-        <ReasoningFeed steps={state.status.steps} />
+      {(status === "running" || status === "pending") && (
+        <div
+          style={{
+            fontSize: 10,
+            color: "#64748b",
+            background: "#f8fafc",
+            border: "1px solid #e2e8f0",
+            borderRadius: 6,
+            padding: "6px 10px",
+            lineHeight: 1.4,
+          }}
+        >
+          Agent log streaming into the sidebar on the page.
+        </div>
       )}
 
       {state.lastError && (
@@ -248,133 +260,6 @@ function Popup() {
   );
 }
 
-function sourceTone(source?: string): {
-  border: string;
-  chipBg: string;
-  chipFg: string;
-  label: string;
-} {
-  switch (source) {
-    case "claude":
-      return {
-        border: "#a78bfa",
-        chipBg: "#ede9fe",
-        chipFg: "#6d28d9",
-        label: "Claude",
-      };
-    case "browser-use":
-      return {
-        border: "#34d399",
-        chipBg: "#d1fae5",
-        chipFg: "#047857",
-        label: "browser-use",
-      };
-    default:
-      return {
-        border: "#cbd5e1",
-        chipBg: "#f1f5f9",
-        chipFg: "#475569",
-        label: "worker",
-      };
-  }
-}
-
-function ReasoningFeed({ steps }: { steps: ScanStep[] }) {
-  const scrollRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [steps.length]);
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-      }}
-    >
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 700,
-          textTransform: "uppercase",
-          letterSpacing: "0.04em",
-          color: "#64748b",
-        }}
-      >
-        Reasoning
-      </div>
-      <div
-        ref={scrollRef}
-        style={{
-          maxHeight: 160,
-          overflowY: "auto",
-          background: "#f8fafc",
-          border: "1px solid #e2e8f0",
-          borderRadius: 6,
-          padding: "6px 8px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-        }}
-      >
-        {steps.map((s, i) => {
-          const tone = sourceTone(s.source);
-          return (
-            <div
-              key={`${s.step}-${i}`}
-              style={{
-                fontSize: 11,
-                lineHeight: 1.35,
-                color: "#334155",
-                borderLeft: `2px solid ${tone.border}`,
-                paddingLeft: 6,
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 4,
-                }}
-              >
-                <span
-                  style={{
-                    background: tone.chipBg,
-                    color: tone.chipFg,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.03em",
-                    padding: "1px 5px",
-                    borderRadius: 3,
-                  }}
-                >
-                  {tone.label}
-                </span>
-                <span style={{ fontWeight: 600, color: "#1e293b" }}>
-                  {s.next_goal || s.evaluation || "step"}
-                </span>
-              </div>
-              {s.actions && s.actions.length > 0 && (
-                <div
-                  style={{
-                    fontFamily: "ui-monospace, SFMono-Regular, monospace",
-                    fontSize: 10,
-                    color: "#64748b",
-                    marginTop: 2,
-                  }}
-                >
-                  → {s.actions.join(", ")}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
 const container = document.getElementById("root");
 if (container) createRoot(container).render(<Popup />);

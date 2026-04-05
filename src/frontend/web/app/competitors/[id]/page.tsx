@@ -7,6 +7,7 @@ import { useCompetitorPolling, getReport } from "@/lib/api";
 import type { Report } from "@/lib/types";
 import { PriceDeltaChart } from "@/components/PriceDeltaChart";
 import { PriceBreakdownChart } from "@/components/PriceBreakdownChart";
+import { PriceMatrixTable } from "@/components/PriceMatrixTable";
 import { ScoreCard } from "@/components/ScoreCard";
 import { ReasoningFeed } from "@/components/ReasoningFeed";
 import {
@@ -100,20 +101,64 @@ export default function CompetitorReportPage() {
       )}
 
       {(() => {
-        const breakdown = report?.sections.find(
-          (s) => s.title === "Price breakdown by product",
+        const matrix = report?.sections.find(
+          (s) => s.title === "Price matrix",
         );
-        const data =
-          (breakdown?.chart as
-            | { data?: { label: string; value: number; delta?: number | null; is_target?: boolean }[] }
-            | undefined)?.data ?? [];
-        if (data.length === 0) return null;
-        return <PriceBreakdownChart data={data} body={breakdown?.body} />;
+        const data = (matrix?.chart as
+          | {
+              data?: {
+                product_names?: string[];
+                rows?: {
+                  competitor: string;
+                  url: string;
+                  prices: (number | null)[];
+                }[];
+              };
+            }
+          | undefined)?.data;
+        if (!data?.product_names?.length || !data.rows?.length) return null;
+        return (
+          <PriceMatrixTable
+            data={{
+              product_names: data.product_names,
+              rows: data.rows,
+            }}
+          />
+        );
       })()}
 
-      {competitors.some(
-        (c) => c.shipping != null || c.tax != null || c.checkout_total != null,
-      ) && <PriceDeltaChart competitors={competitors} />}
+      {(() => {
+        const section = report?.sections.find(
+          (s) => s.title === "Extra fees (shipping + tax)",
+        );
+        const data =
+          (section?.chart as
+            | {
+                data?: {
+                  label: string;
+                  value: number;
+                  shipping?: number;
+                  tax?: number;
+                }[];
+              }
+            | undefined)?.data ?? [];
+        if (data.length === 0) return null;
+        // Adapt the fees data to the existing PriceBreakdownChart shape.
+        // Highest fee = "priced higher" (orange); lowest = emerald.
+        const sorted = [...data].sort((a, b) => a.value - b.value);
+        const median = sorted[Math.floor(sorted.length / 2)]?.value ?? 0;
+        const adapted = data.map((d) => ({
+          label: d.label,
+          value: d.value,
+          delta: d.value - median,
+          is_target: false,
+        }));
+        return <PriceBreakdownChart data={adapted} body={section?.body} />;
+      })()}
+
+      {competitors.some((c) => c.checkout_total != null) && (
+        <PriceDeltaChart competitors={competitors} />
+      )}
 
       {competitors.length > 0 && (
         <Card>

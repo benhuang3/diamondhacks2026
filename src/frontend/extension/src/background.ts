@@ -4,6 +4,7 @@
 import type {
   ExtensionMessage,
   ScanCreateResponse,
+  ScanFinding,
   ScanStatus,
   AnnotationsResponse,
   PopupState,
@@ -20,16 +21,30 @@ const state: PopupState = {
 
 let pollTimer: ReturnType<typeof setTimeout> | null = null;
 let activeTabId: number | null = null;
+// Last injected annotations, cached so we can re-inject when the scan
+// tab navigates to another page covered by the scan (cross-page click).
+let cachedAnnotations: ScanFinding[] = [];
+// Timestamp of the most recent direct inject (post-scan or manual). The
+// onUpdated listener uses this to suppress a duplicate reinject that
+// fires when the same tab's load-complete event arrives shortly after.
+let lastInjectAt = 0;
+const REINJECT_COOLDOWN_MS = 2500;
 
 async function loadState() {
   const stored = await chrome.storage.local.get([
     "scanId",
     "status",
     "lastError",
+    "activeTabId",
+    "cachedAnnotations",
   ]);
   state.scanId = stored.scanId ?? null;
   state.status = stored.status ?? null;
   state.lastError = stored.lastError ?? null;
+  activeTabId = typeof stored.activeTabId === "number" ? stored.activeTabId : null;
+  cachedAnnotations = Array.isArray(stored.cachedAnnotations)
+    ? stored.cachedAnnotations
+    : [];
 }
 
 async function saveState() {
@@ -37,6 +52,8 @@ async function saveState() {
     scanId: state.scanId,
     status: state.status,
     lastError: state.lastError,
+    activeTabId,
+    cachedAnnotations,
   });
 }
 
@@ -129,6 +146,8 @@ async function injectAnnotationsFromBackend() {
     const res = await apiGet<AnnotationsResponse>(
       `/annotations/${state.scanId}`,
     );
+    cachedAnnotations = res.annotations;
+    await saveState();
     const ok = await ensureContentScript(activeTabId);
     if (!ok) {
       throw new Error(
@@ -140,6 +159,7 @@ async function injectAnnotationsFromBackend() {
       type: "INJECT_ANNOTATIONS",
       annotations: res.annotations,
     } satisfies ExtensionMessage);
+    lastInjectAt = Date.now();
   } catch (err) {
     state.lastError = String(err);
     await saveState();
@@ -147,18 +167,71 @@ async function injectAnnotationsFromBackend() {
   }
 }
 
+async function reinjectCachedAnnotations(tabId: number) {
+  if (!cachedAnnotations.length) return;
+  const ok = await ensureContentScript(tabId);
+  if (!ok) return;
+  try {
+    await chrome.tabs.sendMessage(tabId, {
+      type: "INJECT_ANNOTATIONS",
+      annotations: cachedAnnotations,
+    } satisfies ExtensionMessage);
+    lastInjectAt = Date.now();
+  } catch {
+    // tab may have navigated again / been closed — ignore
+  }
+}
+
+// When the scan tab navigates (e.g. user clicks a cross-page finding in
+// the sidebar and the page reloads), re-inject cached annotations so the
+// sidebar and overlays come back — content.ts filters overlays to the
+// new URL and lists the rest as cross-page items.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (tabId !== activeTabId) return;
+  if (changeInfo.status !== "complete") return;
+  if (!cachedAnnotations.length) return;
+  // Skip if we just injected moments ago — the load-complete event that
+  // fires right after the post-scan inject would otherwise cause a
+  // redundant second inject on the same URL.
+  if (Date.now() - lastInjectAt < REINJECT_COOLDOWN_MS) return;
+  void reinjectCachedAnnotations(tabId);
+});
+
 function broadcastState() {
   chrome.runtime
     .sendMessage({ type: "SCAN_STATUS", status: state.status })
     .catch(() => {
       // popup may be closed — ignore
     });
+  void broadcastSidebarStatus();
+}
+
+async function broadcastSidebarStatus() {
+  if (activeTabId == null || !state.status) return;
+  const msg: ExtensionMessage = {
+    type: "SIDEBAR_STATUS",
+    status: state.status,
+  };
+  try {
+    await chrome.tabs.sendMessage(activeTabId, msg);
+    return;
+  } catch {
+    // content script not yet injected — fall through to ensureContentScript
+  }
+  const ok = await ensureContentScript(activeTabId);
+  if (!ok) return;
+  try {
+    await chrome.tabs.sendMessage(activeTabId, msg);
+  } catch {
+    // tab may have been closed — ignore
+  }
 }
 
 async function startScan(url: string) {
   stopPolling();
   state.lastError = null;
   state.status = null;
+  cachedAnnotations = [];
   await saveState();
 
   // remember the active tab so we can inject into it later
@@ -192,6 +265,8 @@ async function startScan(url: string) {
 }
 
 async function clearAnnotations() {
+  cachedAnnotations = [];
+  await saveState();
   if (activeTabId == null) {
     const [tab] = await chrome.tabs.query({
       active: true,

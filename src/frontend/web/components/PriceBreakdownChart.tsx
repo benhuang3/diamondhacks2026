@@ -36,10 +36,10 @@ export function PriceBreakdownChart({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Price breakdown by product</CardTitle>
+        <CardTitle>Extra fees (shipping + tax)</CardTitle>
         <CardDescription>
-          Featured product price for each competitor vs. your store.
-          Competitors are ordered by the largest absolute gap first.
+          Cumulative shipping + tax added on top of each competitor&rsquo;s
+          listed price. Sorted largest fee stack first.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

@@ -1,9 +1,14 @@
-"""Competitor worker: 3-stage pipeline (discover → browse → synthesize).
+"""Competitor worker: 5-stage live pipeline.
 
-Live mode uses Claude to discover competitor storefronts, browses each
-with ``extract_competitor_snapshot`` (bounded concurrency), then asks
-Claude to synthesize a pricing/merchandising brief. DEMO_MODE produces
-canned competitors and a basic synthesis.
+  0. Target browse — observe the user's own store via browser-use.
+  1. Discover — 4 parallel browser-use agents (or Claude fallback).
+  1.5. Shared products — Claude names the top-3 product types the target
+       + competitors all likely carry; top-1 becomes the cart-walk hint.
+  2. Browse — browser-use adds a product to cart and extracts the
+     breakdown for each competitor, bounded concurrency + early-exit.
+  3. Synthesize — Claude writes a strategy brief + recommendations.
+
+DEMO_MODE produces canned competitors and a basic synthesis.
 """
 
 from __future__ import annotations
@@ -17,7 +22,12 @@ from src.config.settings import settings
 from src.db.queries import insert_competitor_result, update_competitor_job
 
 from ..agents.claude_client import ClaudeClient, DemoFallbackError, is_demo_mode
-from ..agents.competitor_browser import extract_competitor_snapshot
+from ..agents.browser_use_cloud import cloud_enabled
+from ..agents.competitor_browser import (
+    discover_competitors_parallel,
+    extract_checkout_snapshot,
+    extract_competitor_snapshot,
+)
 from ..agents import competitor_prompts as prompts
 from ..observability import scan_log
 from ..observability.metrics import metrics
@@ -81,14 +91,15 @@ DEMO_COMPETITORS: list[dict[str, Any]] = [
 ]
 
 
-_BROWSE_CONCURRENCY = 2
+_BROWSE_CONCURRENCY = 4
 # Max browse attempts per competitor site. Each attempt goes through
-# browser-use + Claude, so we keep this tight. On the second failure we
-# drop the site and rely on spare candidates from discovery.
+# browser-use, so we keep this tight. On the second failure we drop the
+# site and move to the next candidate from the discovery list.
 _MAX_BROWSE_ATTEMPTS = 2
-# When discovering, ask for extra candidates so drop-outs still leave us
-# with max_competitors successful browses.
-_DISCOVERY_SPARES = 3
+# Claude generates a long ranked list of competitors; browser-use works
+# through it until max_competitors successful scrapes have landed.
+# Remaining candidates are cancelled once we have enough successes.
+_DISCOVERY_SPARES = 6
 
 
 async def _run_demo(job_id: str, store_url: str, prompt: str | None, hint: str | None) -> None:
@@ -129,7 +140,13 @@ def _sanitize_untrusted(s: str | None, *, max_len: int = 2000) -> str:
 
 
 def _compose_notes(
-    *, rationale: str, shipping_note: str, notes: str, promos: list[str]
+    *,
+    rationale: str,
+    shipping_note: str,
+    notes: str,
+    promos: list[str],
+    fees: Any = None,
+    pages_visited: int | None = None,
 ) -> str:
     pieces: list[str] = []
     for piece in (rationale, shipping_note, notes):
@@ -139,6 +156,10 @@ def _compose_notes(
     promos_clean = [p.strip() for p in (promos or []) if p and p.strip()]
     if promos_clean:
         pieces.append(f"promos: {', '.join(promos_clean)}")
+    if isinstance(fees, (int, float)):
+        pieces.append(f"fees: ${float(fees):.2f}")
+    if isinstance(pages_visited, int) and pages_visited > 0:
+        pieces.append(f"pages visited: {pages_visited}")
     combined = " | ".join(pieces)
     if len(combined) > 500:
         combined = combined[:497] + "..."
@@ -151,9 +172,17 @@ async def _browse_one(
     job_id: str,
     sem: asyncio.Semaphore,
     idx: int,
+    hint: str | None = None,
+    other_products: list[str] | None = None,
 ) -> dict[str, Any] | None:
     raw_url = candidate.get("url", "")
-    name = candidate.get("name") or f"Competitor {idx+1}"
+    raw_name = candidate.get("name") or f"Competitor {idx+1}"
+    # Strip control chars + newlines so a nasty name can't corrupt the
+    # lane identifier or scan_log evaluation strings.
+    name = (
+        "".join(c for c in str(raw_name) if c >= " " and c != "\n")
+        .strip()[:120]
+    ) or f"Competitor {idx+1}"
     rationale = candidate.get("rationale", "") or ""
     try:
         url = validate_public_url(raw_url)
@@ -176,12 +205,14 @@ async def _browse_one(
     # (0..9) or with other candidates.
     step_offset = 1000 + idx * 100
     snapshot: dict[str, Any] | None = None
+    lane = f"cart: {name}"
     async with sem:
         for attempt in range(1, _MAX_BROWSE_ATTEMPTS + 1):
             scan_log.append(
                 job_id,
                 {
                     "step": step_offset - 1,
+                    "lane": lane,
                     "next_goal": (
                         f"browsing {name}"
                         if attempt == 1
@@ -192,8 +223,13 @@ async def _browse_one(
             )
             try:
                 attempt_offset = step_offset + (attempt - 1) * 10
-                snapshot = await extract_competitor_snapshot(
-                    url, scan_id=job_id, step_offset=attempt_offset,
+                snapshot = await extract_checkout_snapshot(
+                    url,
+                    product_hint=hint,
+                    scan_id=job_id,
+                    step_offset=attempt_offset,
+                    lane=lane,
+                    other_products=other_products,
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning(
@@ -202,17 +238,24 @@ async def _browse_one(
                 )
                 snapshot = None
                 continue
-            # Accept on first non-fallback success.
-            if not snapshot.get("is_fallback"):
+            # Accept when checkout was reached and we're not in fallback mode.
+            if (
+                not snapshot.get("is_fallback")
+                and snapshot.get("reached_checkout")
+            ):
                 break
-            # Fallback snapshot → treat as failed attempt, try again.
+            # Either fallback or checkout not reached → retry.
             if attempt < _MAX_BROWSE_ATTEMPTS:
                 log.info(
-                    "Competitor job %s %s came back as fallback; retrying",
-                    job_id, url,
+                    "Competitor job %s %s did not reach checkout (fallback=%s); retrying",
+                    job_id, url, bool(snapshot.get("is_fallback")),
                 )
 
-        if snapshot is None or snapshot.get("is_fallback"):
+        if (
+            snapshot is None
+            or snapshot.get("is_fallback")
+            or not snapshot.get("reached_checkout")
+        ):
             log.info(
                 "Competitor job %s giving up on %s after %d attempts",
                 job_id, url, _MAX_BROWSE_ATTEMPTS,
@@ -221,6 +264,7 @@ async def _browse_one(
                 job_id,
                 {
                     "step": step_offset - 1,
+                    "lane": lane,
                     "next_goal": f"skipped {name} after {_MAX_BROWSE_ATTEMPTS} attempts",
                     "evaluation": "site unavailable / not scrape-able",
                 },
@@ -228,8 +272,32 @@ async def _browse_one(
             return None
 
     promos = snapshot.get("promos") or []
-    featured_price = snapshot.get("featured_price")
-    discount = promos[0] if promos else None
+    price = snapshot.get("price")
+    shipping = snapshot.get("shipping")
+    tax = snapshot.get("tax")
+    fees = snapshot.get("fees")
+    checkout_total = snapshot.get("checkout_total")
+    discount_code = snapshot.get("discount_code")
+    discount_amount = snapshot.get("discount_amount")
+    reached_checkout = bool(snapshot.get("reached_checkout"))
+    pages_visited = snapshot.get("pages_visited")
+    # product_url comes from the agent — validate before we store it in
+    # the DB and render it as an <a href> in the UI. Fall back to the
+    # already-validated candidate URL on any failure.
+    raw_product_url = snapshot.get("product_url") or ""
+    product_url: str | None
+    if raw_product_url:
+        try:
+            product_url = validate_public_url(raw_product_url)
+        except UnsafeURLError as e:
+            log.info(
+                "Competitor job %s dropping unsafe product_url %r: %s",
+                job_id, raw_product_url, e,
+            )
+            product_url = None
+    else:
+        product_url = None
+    featured_product = snapshot.get("featured_product", "") or ""
     is_fallback = bool(snapshot.get("is_fallback"))
     fallback_tag = (
         "[placeholder data — browse failed] " if is_fallback else ""
@@ -239,47 +307,74 @@ async def _browse_one(
         shipping_note=snapshot.get("shipping_note", "") or "",
         notes=snapshot.get("notes", "") or "",
         promos=promos,
+        fees=fees,
+        pages_visited=pages_visited if isinstance(pages_visited, int) else None,
     )
     if len(notes_text) > 500:
         notes_text = notes_text[:497] + "..."
     result = {
         "name": name,
-        "url": snapshot.get("url", url),
-        "price": featured_price,
-        "shipping": None,
-        "tax": None,
-        "discount": discount,
-        "checkout_total": None,
+        "url": product_url or snapshot.get("url", url),
+        "price": price,
+        "shipping": shipping,
+        "tax": tax,
+        "discount": discount_code or (promos[0] if promos else None),
+        "checkout_total": checkout_total,
         "notes": notes_text,
+        # raw_data persists the side-collected prices so the report can
+        # build a top-3 shared-products × competitors matrix table.
+        "raw_data": {
+            "other_product_prices": snapshot.get("other_product_prices") or [],
+        },
     }
     await insert_competitor_result(job_id, result)
+    total_str = (
+        f"${float(checkout_total):.2f}"
+        if isinstance(checkout_total, (int, float))
+        else "—"
+    )
+    reached_suffix = "" if reached_checkout else " (not reached)"
+    log.info(
+        "Competitor job %s persisted %s: total=%s%s",
+        job_id, name, total_str, reached_suffix,
+    )
     scan_log.append(
         job_id,
         {
             "step": step_offset - 2,
+            "lane": lane,
             "next_goal": (
                 f"persisted {name} (placeholder)" if is_fallback
-                else f"persisted {name}"
+                else f"persisted {name}: total={total_str}{reached_suffix}"
             ),
             "evaluation": (
-                f"price={featured_price} promos={len(promos)}"
+                f"price={price} shipping={shipping} tax={tax} total={checkout_total}"
                 + (" [fallback]" if is_fallback else "")
             ),
         },
     )
-    # Return snapshot + candidate fields for synthesis input. The
-    # is_fallback flag lets the synthesis step downweight unreliable rows.
+    # Return snapshot + candidate fields for synthesis input.
     return {
         "name": name,
-        "url": snapshot.get("url", url),
+        "url": product_url or snapshot.get("url", url),
+        "product_url": product_url,
         "title": snapshot.get("title", ""),
-        "featured_product": snapshot.get("featured_product", "") or "",
-        "featured_price": featured_price,
+        "featured_product": featured_product,
+        "price": price,
+        "shipping": shipping,
+        "tax": tax,
+        "fees": fees,
+        "discount_code": discount_code,
+        "discount_amount": discount_amount,
+        "checkout_total": checkout_total,
+        "reached_checkout": reached_checkout,
+        "pages_visited": pages_visited,
         "promos": promos,
         "shipping_note": snapshot.get("shipping_note", "") or "",
         "notes": snapshot.get("notes", "") or "",
         "rationale": rationale,
         "is_fallback": is_fallback,
+        "other_product_prices": snapshot.get("other_product_prices") or [],
     }
 
 
@@ -293,12 +388,14 @@ async def _run_live(
         {
             "step": 0,
             "source": "browser-use",
+            "lane": "your store",
             "next_goal": f"observing your store {store_url}",
         },
     )
     try:
         target_snapshot = await extract_competitor_snapshot(
             store_url, scan_id=job_id, step_offset=500,
+            lane="your store",
         )
     except Exception as e:  # noqa: BLE001
         log.warning(
@@ -306,28 +403,70 @@ async def _run_live(
             job_id, store_url, e,
         )
         target_snapshot = None
+        scan_log.append(
+            job_id,
+            {
+                "step": 1,
+                "source": "worker",
+                "lane": "your store",
+                "next_goal": "target browse failed — comparison will proceed without baseline",
+                "evaluation": str(e)[:200],
+            },
+        )
 
-    scan_log.append(
-        job_id,
-        {
-            "step": 10,
-            "source": "claude",
-            "next_goal": f"discovering competitors for {store_url}",
-        },
-    )
+    use_agent_discovery = cloud_enabled()
 
     client = ClaudeClient()
-    discovery_prompt = prompts.COMPETITOR_DISCOVERY_PROMPT.format(
-        store_url=store_url,
-        product_hint=_sanitize_untrusted(hint, max_len=500),
-        custom_prompt=_sanitize_untrusted(prompt),
-    )
-    text = await client.complete(
-        discovery_prompt,
-        system=prompts.SYSTEM_COMPETITOR_DISCOVERY,
-        max_tokens=1024,
-    )
-    candidates_raw = _extract_json_array(text)
+    candidates_raw: list[dict[str, Any]] = []
+
+    if use_agent_discovery:
+        scan_log.append(
+            job_id,
+            {
+                "step": 10,
+                "source": "browser-use",
+                "lane": "discover: merge",
+                "next_goal": (
+                    "spinning up 4 parallel agents to scrape the web for "
+                    f"competitors of {store_url}"
+                ),
+            },
+        )
+        try:
+            candidates_raw = await discover_competitors_parallel(
+                store_url=store_url,
+                product_hint=_sanitize_untrusted(hint, max_len=500),
+                custom_prompt=_sanitize_untrusted(prompt),
+                scan_id=job_id,
+                step_offset_base=30,
+                per_agent_count=5,
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("Competitor job %s parallel discovery failed: %s", job_id, e)
+            candidates_raw = []
+
+    # Claude fallback when cloud discovery is disabled OR returned nothing.
+    if not candidates_raw:
+        scan_log.append(
+            job_id,
+            {
+                "step": 10,
+                "source": "claude",
+                "lane": "claude: discovery",
+                "next_goal": f"discovering competitors for {store_url}",
+            },
+        )
+        discovery_prompt = prompts.COMPETITOR_DISCOVERY_PROMPT.format(
+            store_url=store_url,
+            product_hint=_sanitize_untrusted(hint, max_len=500),
+            custom_prompt=_sanitize_untrusted(prompt),
+        )
+        text = await client.complete(
+            discovery_prompt,
+            system=prompts.SYSTEM_COMPETITOR_DISCOVERY,
+            max_tokens=1024,
+        )
+        candidates_raw = _extract_json_array(text)
     # Validate + dedupe by URL.
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -364,31 +503,94 @@ async def _run_live(
             "evaluation": ", ".join(c.get("name", "?") for c in candidates),
         },
     )
-    await update_competitor_job(job_id, progress=0.25)
+    await update_competitor_job(job_id, progress=0.22)
+
+    # ---- Stage 1.5: identify the 3 product types target + competitors
+    # ---- all likely sell. Top-ranked one becomes the hint for cart walks.
+    shared_products = await _identify_shared_products(
+        store_url=store_url,
+        target_snapshot=target_snapshot,
+        candidates=candidates,
+        hint=hint,
+        custom_prompt=prompt,
+        client=client,
+        job_id=job_id,
+    )
+    cart_hint_raw = (
+        shared_products[0]["name"] if shared_products else hint or ""
+    )
+    # Strip control chars + newlines + cap length so whatever Claude
+    # returned can't mangle the cart-walk task prompt f-string.
+    cart_hint = (
+        "".join(c for c in cart_hint_raw if c >= " " and c != "\n")
+        .replace("'", "")
+        .strip()[:120]
+    )
+    await update_competitor_job(job_id, progress=0.28)
+
+    # Pass the 2nd + 3rd shared-product names so each cart walk can also
+    # record their prices in passing (no extra clicks) for the pricing
+    # matrix.
+    other_product_names = [
+        p["name"] for p in (shared_products or [])[1:3]
+        if p.get("name")
+    ]
 
     sem = asyncio.Semaphore(_BROWSE_CONCURRENCY)
-    snapshots = await asyncio.gather(
-        *[
-            _browse_one(c, job_id=job_id, sem=sem, idx=i)
-            for i, c in enumerate(candidates)
-        ]
-    )
-    snapshots_list = [s for s in snapshots if s is not None]
-    # Trim surviving snapshots down to max_competitors (preserves discovery
-    # ranking — earlier candidates win when we have spares).
-    if len(snapshots_list) > settings.max_competitors:
-        snapshots_list = snapshots_list[: settings.max_competitors]
+    # Work through the ranked candidate list, keeping successful browses
+    # as they arrive. Once we have max_competitors successes, cancel the
+    # rest so we don't pay for cloud sessions we're about to discard.
+    tasks = [
+        asyncio.create_task(
+            _browse_one(
+                c, job_id=job_id, sem=sem, idx=i,
+                hint=cart_hint, other_products=other_product_names,
+            )
+        )
+        for i, c in enumerate(candidates)
+    ]
+    snapshots_list: list[dict[str, Any]] = []
+    try:
+        for fut in asyncio.as_completed(tasks):
+            result = await fut
+            if result is not None:
+                snapshots_list.append(result)
+                # Incremental progress so the bar doesn't sit at 0.28 for
+                # minutes while cart walks run. 0.28 → ~0.70 across all
+                # competitor successes.
+                pct = 0.28 + 0.42 * (
+                    min(len(snapshots_list), settings.max_competitors)
+                    / max(1, settings.max_competitors)
+                )
+                await update_competitor_job(job_id, progress=pct)
+                if len(snapshots_list) >= settings.max_competitors:
+                    break
+    finally:
+        # Cancel any still-running browses; run_cloud_agent's finally
+        # block will issue stop_task_and_session to release cloud slots.
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+    if snapshots_list:
+        scan_log.append(
+            job_id,
+            {
+                "step": 98,
+                "next_goal": (
+                    f"collected {len(snapshots_list)}/"
+                    f"{settings.max_competitors} successful snapshots; "
+                    "cancelling remaining browses"
+                ),
+            },
+        )
 
     if not snapshots_list:
         raise DemoFallbackError("no competitor snapshots captured")
 
-    # If every single candidate fell through to placeholder data, the live
-    # pipeline has silently degraded — skip synthesis and drop to demo so
-    # the user isn't shown fabricated numbers as if they were observed.
-    if all(s.get("is_fallback") for s in snapshots_list):
-        raise DemoFallbackError(
-            "all competitor snapshots were fallback placeholders"
-        )
+    # Note: _browse_one already filters out fallback + not-reached
+    # snapshots, so snapshots_list contains only clean live results here.
 
     await update_competitor_job(job_id, progress=0.75)
     scan_log.append(
@@ -396,6 +598,7 @@ async def _run_live(
         {
             "step": 2,
             "source": "claude",
+            "lane": "claude: synthesis",
             "next_goal": "synthesizing strategy brief",
             "evaluation": f"{len(snapshots_list)} snapshots captured",
         },
@@ -408,11 +611,16 @@ async def _run_live(
         _target_for_prompt(store_url, target_snapshot), ensure_ascii=False
     )
 
+    # If we identified a specific shared product, tell synthesis about it
+    # — cart walks compared stores against THAT product, so Claude should
+    # frame recommendations around it rather than the user's vague hint.
+    synthesis_hint = cart_hint if shared_products else (hint or "")
+
     synthesis: dict[str, Any] | None = None
     try:
         synth_prompt = prompts.COMPETITOR_SYNTHESIS_PROMPT.format(
             store_url=store_url,
-            product_hint=_sanitize_untrusted(hint, max_len=500),
+            product_hint=_sanitize_untrusted(synthesis_hint, max_len=500),
             target_json=target_json,
             competitors_json=json.dumps(snapshots_list, ensure_ascii=False),
         )
@@ -467,6 +675,7 @@ async def _run_live(
     await update_competitor_job(job_id, progress=0.9)
     await generate_competitor_report(
         job_id, store_url, synthesis=synthesis, price_table=price_table,
+        shared_products=shared_products,
     )
     await update_competitor_job(job_id, status="done", progress=1.0)
     scan_log.append(job_id, {"step": 4, "next_goal": "done"})
@@ -520,7 +729,13 @@ def _build_price_table(
 
     rows: list[dict[str, Any]] = []
     for s in snapshots:
-        price = s.get("featured_price")
+        # Target uses featured_price (advertised subtotal, pre-tax/ship),
+        # so we compare apples-to-apples: prefer competitor's cart subtotal
+        # (`price`), NOT checkout_total (which bundles shipping + tax).
+        # checkout_total is only a last-resort fallback.
+        price = s.get("price")
+        if not isinstance(price, (int, float)):
+            price = s.get("checkout_total")
         if not isinstance(price, (int, float)):
             continue
         delta: float | None
@@ -568,9 +783,11 @@ def _fallback_synthesis(
 ) -> dict[str, Any]:
     names = [s.get("name", "?") for s in snapshots]
     prices = [
-        s.get("featured_price")
+        s.get("checkout_total") if isinstance(s.get("checkout_total"), (int, float))
+        else s.get("price")
         for s in snapshots
-        if isinstance(s.get("featured_price"), (int, float))
+        if isinstance(s.get("checkout_total"), (int, float))
+        or isinstance(s.get("price"), (int, float))
     ]
     if prices:
         lo = min(prices)
@@ -596,6 +813,104 @@ def _fallback_synthesis(
         "recommendations": recs,
         "scores": {"pricing": 60, "value": 60, "experience": 70},
     }
+
+
+async def _identify_shared_products(
+    *,
+    store_url: str,
+    target_snapshot: dict[str, Any] | None,
+    candidates: list[dict[str, Any]],
+    hint: str | None,
+    custom_prompt: str | None,
+    client: ClaudeClient,
+    job_id: str,
+) -> list[dict[str, Any]]:
+    """Claude names the 3 product types shared across target + competitors.
+
+    Returns a list of ``{name, description, match_likelihood}`` dicts
+    ranked most-shared first. Empty list on any failure — caller falls
+    back to the user's plain product_hint.
+    """
+    scan_log.append(
+        job_id,
+        {
+            "step": 15,
+            "source": "claude",
+            "lane": "claude: shared products",
+            "next_goal": "identifying top-3 shared product types",
+            "evaluation": f"{len(candidates)} candidates",
+        },
+    )
+    competitor_list = [
+        {"name": c.get("name", "?"), "url": c.get("url", ""),
+         "rationale": (c.get("rationale") or "")[:200]}
+        for c in candidates
+    ]
+    target_featured = ""
+    target_price_str = "unknown"
+    if target_snapshot:
+        target_featured = target_snapshot.get("featured_product", "") or ""
+        tp = target_snapshot.get("featured_price")
+        if isinstance(tp, (int, float)):
+            target_price_str = f"${float(tp):.2f}"
+    try:
+        prompt_text = prompts.SHARED_PRODUCTS_PROMPT.format(
+            store_url=store_url,
+            target_featured_product=target_featured or "(unknown)",
+            target_featured_price=target_price_str,
+            product_hint=_sanitize_untrusted(hint, max_len=500),
+            custom_prompt=_sanitize_untrusted(custom_prompt),
+            competitors_json=json.dumps(competitor_list, ensure_ascii=False),
+        )
+        text = await client.complete(
+            prompt_text,
+            system=prompts.SYSTEM_SHARED_PRODUCTS,
+            max_tokens=512,
+        )
+        parsed = _extract_json_object(text)
+    except DemoFallbackError as e:
+        log.info("shared-products Claude call failed: %s", e)
+        return []
+    except Exception as e:  # noqa: BLE001
+        log.warning("shared-products parse error: %s", e)
+        return []
+
+    if not isinstance(parsed, dict):
+        return []
+    raw_products = parsed.get("products") or []
+    if not isinstance(raw_products, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for item in raw_products[:3]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()[:120]
+        desc = str(item.get("description", "")).strip()[:240]
+        likelihood_raw = item.get("match_likelihood", 50)
+        try:
+            likelihood = max(0, min(100, int(likelihood_raw)))
+        except (TypeError, ValueError):
+            likelihood = 50
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "description": desc,
+            "match_likelihood": likelihood,
+        })
+
+    if out:
+        scan_log.append(
+            job_id,
+            {
+                "step": 16,
+                "source": "claude",
+                "lane": "claude: shared products",
+                "next_goal": f"found {len(out)} shared products",
+                "evaluation": " | ".join(p["name"] for p in out),
+            },
+        )
+    return out
 
 
 def _extract_json_array(text: str) -> list[dict[str, Any]]:

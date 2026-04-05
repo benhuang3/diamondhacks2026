@@ -40,6 +40,8 @@ export interface ScanStep {
   step: number;
   ts: number;
   source?: string; // "worker" | "claude" | "browser-use"
+  lane?: string; // panel id — empty string = main panel
+  live_url?: string; // browser-use cloud live-session URL, if any
   evaluation: string;
   memory: string;
   next_goal: string;

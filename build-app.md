@@ -13,14 +13,14 @@ With a team of agents and a custom prompt (not necessary), the app scrapes the w
 
 ### Revisions
 
+1. Make all scraping be done on the cloud through the BROWSER_USE API key instead of being managed locally by Claude. When calling it, spin up a agent on the cloud to research the different companies. 
 
-1. The price breakdown should be by product, where it shows which products have the biggest price difference between you and your competitors.
 
-2. After scanning, the plugin should show a sidebar of changes where you can click to each issue and view it.
+1. After scanning, the plugin should show a sidebar of changes where you can click to each issue and view it.
 
-3. Implement the feature so that attempts to check out and scans the pages along the way, with a maximum depth of MAX_SCAN_PAGES=10. It should do a shallow breadth first search and try to check out an item, to see shipping tax, other fees, and the final price.
+3. Implement the feature so that attempts to check out and scans the pages along the way. It should do a shallow breadth first search to catalog pages then try to check out an item, to see shipping tax, other fees, and the final price.
 
-4. 
-
+4. Can live-view the agents for competitor finder and scan
+5. 
 
 

@@ -29,6 +29,8 @@ export interface ScanStep {
   step: number;
   ts: number;
   source?: string; // "worker" | "claude" | "browser-use"
+  lane?: string; // panel id — empty string = main panel
+  live_url?: string; // browser-use cloud live-session URL, if any
   evaluation: string;
   memory: string;
   next_goal: string;
@@ -85,6 +87,7 @@ export interface CompetitorJobStatus {
 export type ExtensionMessage =
   | { type: "START_SCAN"; url: string }
   | { type: "SCAN_STATUS"; status: ScanStatus | null }
+  | { type: "SIDEBAR_STATUS"; status: ScanStatus }
   | { type: "INJECT_ANNOTATIONS"; annotations: ScanFinding[] }
   | { type: "CLEAR_ANNOTATIONS" }
   | { type: "GET_STATE" }

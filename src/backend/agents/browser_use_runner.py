@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.config.settings import settings
 
 from ..observability import scan_log
+from .browser_use_cloud import CloudAgentError, cloud_enabled, run_cloud_agent
 
 log = logging.getLogger(__name__)
 
@@ -200,6 +201,50 @@ async def fetch_page_summary(
     if settings.demo_mode or _is_demo_key():
         return snapshot
 
+    # Prefer browser-use Cloud when an API key is configured — the cloud
+    # runs the agent's LLM too, so our Anthropic quota stays for discovery
+    # / synthesis / findings Claude calls.
+    if cloud_enabled():
+        try:
+            task = (
+                f"Navigate to {url} and observe the page. Do not click, do not "
+                "submit any forms, do not navigate away. Return a structured "
+                "summary with: the page title; up to 15 interactive elements "
+                "(button, a, input, img) including their tag, a CSS selector, "
+                "and visible text (<=80 chars); the count of <img> elements "
+                "that are missing an alt attribute."
+            )
+            parsed = await run_cloud_agent(
+                task=task,
+                schema=_PageSummary,
+                start_url=url,
+                max_steps=6,
+                scan_id=scan_id,
+                timeout_s=_AGENT_WALL_CLOCK_SECONDS,
+            )
+            elements = [
+                {
+                    "tag": _clamp(e.tag, 16),
+                    "selector": _clamp(e.selector, _MAX_SELECTOR_LEN),
+                    "text": _clamp(e.text, _MAX_TEXT_LEN),
+                }
+                for e in parsed.interactive_elements[:_MAX_ELEMENTS]
+            ]
+            return {
+                "url": url,
+                "title": _clamp(parsed.title, _MAX_TITLE_LEN),
+                "interactive_elements": elements,
+                "missing_alt_images": max(0, int(parsed.missing_alt_images)),
+                "low_contrast_count": max(0, int(parsed.low_contrast_count)),
+            }
+        except CloudAgentError as e:
+            log.warning("cloud scan agent failed for %s, using demo snapshot: %s", url, e)
+            return snapshot
+        except Exception as e:  # noqa: BLE001
+            log.warning("cloud scan agent exception for %s, using demo snapshot: %s", url, e)
+            return snapshot
+
+    # --- Local fallback (no cloud key configured) ---
     try:
         if scan_id:
             scan_log.append(
