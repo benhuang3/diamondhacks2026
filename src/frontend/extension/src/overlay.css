@@ -106,6 +106,12 @@
 }
 
 /* Sidebar — full-height edge panel that pushes page content left. */
+.sr-sidebar,
+.sr-sidebar *,
+.sr-sidebar *::before,
+.sr-sidebar *::after {
+  box-sizing: border-box;
+}
 .sr-sidebar {
   position: fixed;
   top: 0;
@@ -222,26 +228,33 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   color: #1e40af;
 }
 .sr-sidebar-list {
+  overflow-x: hidden;
   overflow-y: auto;
   flex: 1;
-  padding: 6px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 0;
+  min-width: 0;
 }
 .sr-sidebar-item {
   display: flex;
   align-items: flex-start;
   gap: 8px;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
-  border: 1px solid transparent;
+  border: 0 solid transparent;
   border-left-width: 3px;
-  border-radius: 6px;
+  border-bottom: 1px solid #f1f5f9;
+  border-radius: 0;
   background: #ffffff;
   text-align: left;
   cursor: pointer;
   font-family: inherit;
+  white-space: normal;
+  overflow: hidden;
   transition:
     background 120ms ease,
     border-color 120ms ease;
@@ -294,8 +307,10 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   color: #1e40af;
 }
 .sr-sidebar-item-text {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .sr-sidebar-item-title {
   font-weight: 600;
@@ -303,6 +318,8 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   color: #0f172a;
   margin-bottom: 2px;
   line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .sr-sidebar-item-desc {
   font-size: 11px;
@@ -312,14 +329,23 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.sr-sidebar-item.sr-item-expanded .sr-sidebar-item-desc {
+  display: block;
+  -webkit-line-clamp: unset;
+  overflow: visible;
+  white-space: normal;
+  word-break: break-word;
 }
 
 /* Page groups */
 .sr-page-group {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  padding: 6px 0 8px;
+  gap: 0;
+  padding: 0 0 4px;
   border-bottom: 1px solid #f1f5f9;
 }
 .sr-page-group:last-child {
@@ -329,7 +355,7 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 4px 2px;
+  padding: 6px 10px 2px;
 }
 .sr-page-group-label {
   flex: 1;
@@ -357,7 +383,7 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
 .sr-page-group-counts {
   display: flex;
   gap: 6px;
-  padding: 0 4px 4px;
+  padding: 0 10px 4px;
 }
 .sr-sidebar-item.sr-cross-page {
   cursor: pointer;
@@ -375,6 +401,73 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
   line-height: 1;
   align-self: center;
   padding-left: 6px;
+}
+
+/* Item row — wraps a finding item + its fix button */
+.sr-item-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.sr-item-row .sr-sidebar-item {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+.sr-item-row .sr-fix-error {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: #991b1b;
+  padding: 2px 6px 0 10px;
+  line-height: 1.4;
+}
+
+/* Fix button */
+.sr-fix-btn {
+  align-self: flex-start;
+  margin-top: 4px;
+  margin-right: 4px;
+  padding: 4px 8px;
+  min-width: 44px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-family: inherit;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #334155;
+  cursor: pointer;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+.sr-fix-btn:hover {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}
+.sr-fix-btn.sr-fix-applied {
+  background: #ecfdf5;
+  color: #047857;
+  border-color: #a7f3d0;
+}
+.sr-fix-btn.sr-fix-applied:hover {
+  background: #d1fae5;
+}
+.sr-fix-btn.sr-fix-pending {
+  background: #f8fafc;
+  color: #94a3b8;
+  cursor: wait;
+}
+.sr-fix-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 /* Live scan meta (status pill + progress bar) */
@@ -468,6 +561,27 @@ html.sr-sidebar-open.sr-sidebar-collapsed-push {
 }
 .sr-live-link:hover {
   background: #d1fae5;
+}
+.sr-live-link.sr-live-link-meta {
+  margin-left: auto;
+  animation: sr-live-pulse 1.8s ease-in-out infinite;
+}
+@keyframes sr-live-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(16, 185, 129, 0);
+  }
+}
+.sr-reasoning.sr-reasoning-expanded {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.sr-reasoning.sr-reasoning-expanded .sr-reasoning-feed {
+  max-height: none;
+  flex: 1 1 auto;
 }
 .sr-reasoning-feed {
   max-height: 160px;

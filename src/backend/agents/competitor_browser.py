@@ -51,8 +51,41 @@ _MAX_TITLE_LEN = 200
 _MAX_PRODUCT_LEN = 160
 _MAX_SHIPPING_LEN = 200
 _MAX_PROMO_LEN = 120
-_MAX_NOTES_LEN = 500
+_MAX_NOTES_LEN = 160
 _MAX_PROMOS_ITEMS = 5
+_MAX_TOP_PRODUCTS = 3
+
+
+def _clean_top_products(items: list[Any]) -> list[dict[str, Any]]:
+    """Normalise the top_products list the LLM returned: clamp names,
+    drop blanks, coerce prices to floats, cap length. Accepts pydantic
+    models or raw dicts."""
+    out: list[dict[str, Any]] = []
+    for it in items or []:
+        name = ""
+        price: Optional[float] = None
+        url = ""
+        if hasattr(it, "product"):
+            name = _clamp(getattr(it, "product", ""), _MAX_PRODUCT_LEN)
+            raw = getattr(it, "price", None)
+            url = _clamp(getattr(it, "url", "") or "", 2048)
+        elif isinstance(it, dict):
+            name = _clamp(it.get("product", ""), _MAX_PRODUCT_LEN)
+            raw = it.get("price")
+            url = _clamp(it.get("url", "") or "", 2048)
+        else:
+            continue
+        if not name:
+            continue
+        if raw is not None:
+            try:
+                price = max(0.0, float(raw))
+            except (TypeError, ValueError):
+                price = None
+        out.append({"product": name, "price": price, "url": url})
+        if len(out) >= _MAX_TOP_PRODUCTS:
+            break
+    return out
 
 
 async def _detect_platform(url: str) -> Optional[str]:
@@ -200,6 +233,9 @@ def _demo_snapshot_for(url: str, *, is_fallback: bool = False) -> dict[str, Any]
         "promos": list(tpl["promos"]),
         "shipping_note": tpl["shipping_note"],
         "notes": tpl["notes"],
+        "top_products": [
+            {"product": tpl["featured_product"], "price": tpl["featured_price"]},
+        ],
         "is_demo": True,
         "is_fallback": is_fallback,
     }
@@ -267,7 +303,8 @@ async def _run_browser_use_agent(
         "showcased (featured_product, e.g. 'Blue Leather Bifold Wallet'); "
         "its price (featured_price, USD float or null); any promotional "
         "codes or sale banners (promos list, <=5 items); the shipping "
-        "policy if visible (shipping_note); short observations (notes). "
+        "policy if visible (shipping_note); ONE short observation, one "
+        "sentence max (notes, <=160 chars). "
         "If no clear featured product exists, leave featured_product "
         "empty and featured_price null. Do not navigate or interact, "
         "only observe and return structured output."
@@ -325,6 +362,7 @@ async def _run_browser_use_agent(
         "promos": promos,
         "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
         "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
+        "top_products": _clean_top_products(parsed.top_products or []),
         "is_demo": False,
         "is_fallback": False,
     }
@@ -339,6 +377,8 @@ async def extract_competitor_snapshot(
     timeout_ms: Optional[int] = None,
     step_offset: int = 0,
     lane: str = "",
+    is_target: bool = False,
+    custom_prompt: Optional[str] = None,
 ) -> dict[str, Any]:
     """Return a dict snapshot of a competitor's front page.
 
@@ -357,6 +397,22 @@ async def extract_competitor_snapshot(
     # discovery/synthesis Claude calls.
     if cloud_enabled():
         try:
+            top_clause = ""
+            if is_target:
+                focus = (custom_prompt or "").strip().replace("\n", " ")[:200]
+                focus_hint = (
+                    f" Prioritise products that match this focus: {focus!r}."
+                    if focus
+                    else ""
+                )
+                top_clause = (
+                    " ALSO extract the top 3 most popular products on the "
+                    "front page or best-sellers section into top_products, "
+                    "each with product name, price in USD (null price if "
+                    "not shown), AND the absolute URL of that product's "
+                    "page (href of the link wrapping the product tile). "
+                    "Leave url empty only if no link exists." + focus_hint
+                )
             task = (
                 f"Observe the front page of {url}. Do not click, do not add "
                 "to cart, do not submit forms — only observe. Extract: the "
@@ -364,9 +420,11 @@ async def extract_competitor_snapshot(
                 "being showcased (featured_product); its price "
                 "(featured_price, USD float or null); any promotional codes "
                 "or sale banners (promos list, <=5 items); the shipping "
-                "policy if visible (shipping_note); short observations "
-                "(notes). If no clear featured product exists, leave "
+                "policy if visible (shipping_note); ONE short observation, "
+                "one sentence max (notes, <=160 chars). If no clear featured "
+                "product exists, leave "
                 "featured_product empty and featured_price null."
+                + top_clause
             )
             parsed = await run_cloud_agent(
                 task=task,
@@ -389,6 +447,7 @@ async def extract_competitor_snapshot(
                     featured_price = max(0.0, float(parsed.featured_price))
                 except (TypeError, ValueError):
                     featured_price = None
+            top_products = _clean_top_products(parsed.top_products or [])
             return {
                 "url": url,
                 "title": _clamp(parsed.title, _MAX_TITLE_LEN),
@@ -397,6 +456,7 @@ async def extract_competitor_snapshot(
                 "promos": promos,
                 "shipping_note": _clamp(parsed.shipping_note, _MAX_SHIPPING_LEN),
                 "notes": _clamp(parsed.notes, _MAX_NOTES_LEN),
+                "top_products": top_products,
                 "is_demo": False,
                 "is_fallback": False,
             }
@@ -569,25 +629,30 @@ async def _run_checkout_agent(
         clean = [p.replace("'", "") for p in other_products if p]
         if clean:
             other_clause = (
-                " WHILE browsing, if you happen to see prices for any of "
-                f"these product types — {', '.join(repr(p) for p in clean)}"
-                " — on the catalog, nav, or related-products sections "
-                "(no extra clicks required), record them in "
-                "other_product_prices as {product, price} pairs. "
-                "Leave the list empty if you don't see them."
+                " AFTER the cart walk, navigate back to the storefront "
+                "and try to find catalog prices for these additional "
+                f"product categories: {', '.join(repr(p) for p in clean)}. "
+                "For each one you can find in 1-2 steps, record a "
+                "{product, price} entry in other_product_prices — "
+                "catalog price only, do NOT add these to cart. Skip a "
+                "category if you can't find it quickly. Leave the list "
+                "empty if none match."
             )
     task = (
-        f"Starting at {url}, perform a shallow catalog walk: on the front "
-        "page, list 2-3 product or category links. Click into one product "
-        f"that best matches the hint '{hint}' (or any prominent product if "
-        "no hint). Add it to cart. Navigate to the cart or checkout "
-        "preview. Extract the full price breakdown (subtotal, shipping, "
-        "tax, fees, total) from the cart/checkout page. DO NOT place the "
-        "order. DO NOT enter payment information. DO NOT create an "
-        "account. If you hit a login wall, captcha, or out-of-stock "
-        "error, set reached_checkout=false and record the reason in "
-        "notes. Return the structured CheckoutSnapshot."
-        + other_clause
+        f"Starting at {url}: find ONE product matching the hint "
+        f"'{hint}' (any prominent product if no hint), add it to cart, "
+        "and read the cart totals. Direct path — first matching item "
+        "you see, add it, go to cart. Record `featured_product`, "
+        "`product_url`, `price`, and the cart page's "
+        "`shipping`/`tax`/`checkout_total`. If add-to-cart fails "
+        "(skeleton loaders, captcha, auth wall, out of stock), keep "
+        "whatever price you already captured and return with "
+        "reached_checkout=false. DO NOT proceed to checkout. DO NOT "
+        "enter payment information. DO NOT create an account. If you "
+        "hit a login wall, set reached_checkout=false and return "
+        "whatever you already captured (one-sentence reason in notes, "
+        "<=160 chars)." + other_clause + " Return the structured "
+        "CheckoutSnapshot."
     )
 
     llm = ChatAnthropic(
@@ -615,8 +680,7 @@ async def _run_checkout_agent(
         register_new_step_callback=_make_step_callback(scan_id, step_offset),
     )
 
-    # Extra 2 steps budget when we're also picking up ancillary prices.
-    max_steps = 12 if other_products else 10
+    max_steps = 8 + (3 if other_products else 0)
     history = await asyncio.wait_for(
         agent.run(max_steps=max_steps),
         timeout=_CHECKOUT_WALL_CLOCK_SECONDS,
@@ -712,12 +776,20 @@ async def extract_checkout_snapshot(
                 )
             hint = product_hint or ""
             task = (
-                f"Starting at {url}: briefly list 2-3 product links from "
-                "the front page, click into ONE product that matches the "
-                f"hint '{hint}' (any prominent product if no hint), add it "
-                "to cart, and navigate to the CART page. Read whatever "
-                "price breakdown is visible on the cart page and return "
-                "it.\n"
+                f"Starting at {url}: find ONE product matching the hint "
+                f"'{hint}' (or any prominent product if no hint), add it "
+                "to cart, and read the cart/checkout totals. Direct path "
+                "only — do NOT browse multiple categories, do NOT compare "
+                "items, do NOT collect any other prices. First matching "
+                "item you see, add it, go to cart.\n"
+                "Set `featured_product`, `product_url`, and `price` to "
+                "the item you picked. On the cart page read `shipping`, "
+                "`tax`, and `checkout_total`. If adding-to-cart fails, "
+                "the site loops on skeleton loaders, a captcha blocks "
+                "you, or the cart shows empty after 2 attempts: return "
+                "whatever you captured with reached_checkout=false. "
+                "Any price you captured is valuable — do not throw it "
+                "away because the cart walk failed.\n"
                 "If you encounter a CAPTCHA (hCaptcha, reCAPTCHA, image "
                 "challenge, 'I'm not a robot' checkbox), SOLVE IT and "
                 "continue — you have vision + captcha-solving capability. "
@@ -733,35 +805,39 @@ async def extract_checkout_snapshot(
                 "leave those fields null and move on — do not try to "
                 "trigger them.\n"
                 "  • If the site requires an account login before you can "
-                "view the cart (hard auth wall, not just a captcha), set "
-                "reached_checkout=false with the reason in notes and "
-                "return immediately.\n"
-                "  • If the product is out of stock, try the next most "
-                "prominent product ONCE; if that also fails, return "
-                "reached_checkout=false.\n"
+                "view the cart (hard auth wall), set reached_checkout=false "
+                "and return whatever catalog price you captured.\n"
+                "  • If the first product is out of stock, try the next "
+                "most prominent product ONCE.\n"
                 "  • Do NOT loop on 'wait' or 'scroll' if the page is a "
-                "skeleton after 2 tries — return reached_checkout=false "
-                "with a short note.\n"
-                "Set reached_checkout=true when you can read the cart "
-                "page with at least a subtotal visible. Return the "
-                "structured CheckoutSnapshot."
+                "skeleton after 2 tries — return with reached_checkout=false.\n"
+                "Set reached_checkout=true ONLY when you reach the cart "
+                "page and read a subtotal there. Otherwise return with "
+                "reached_checkout=false but keep the catalog `price` "
+                "populated.\n"
             )
             if other_products:
                 clean = [p.replace("'", "") for p in other_products if p]
                 if clean:
                     task += (
-                        "\nWHILE browsing, if you happen to see prices for "
-                        f"these product types — {', '.join(repr(p) for p in clean)}"
-                        " — anywhere on catalog / nav / related sections "
-                        "(no extra clicks), record each as a "
-                        "{product, price} pair in other_product_prices. "
-                        "Leave the list empty if you don't see them."
+                        "AFTER the cart walk above completes, navigate "
+                        "BACK to the storefront and try to find listing "
+                        "prices for these additional product categories: "
+                        f"{', '.join(repr(p) for p in clean)}. For each "
+                        "one you can find quickly (one catalog/search "
+                        "click, no deep browsing), record a "
+                        "{product, price} entry in other_product_prices. "
+                        "Do NOT add these to cart — catalog price only. "
+                        "Skip a category if you can't find it in 1-2 "
+                        "steps and move to the next. Leave the list "
+                        "empty if none match.\n"
                     )
+            task += "Return the structured CheckoutSnapshot."
             parsed = await run_cloud_agent(
                 task=task,
                 schema=CheckoutSnapshot,
                 start_url=url,
-                max_steps=12 if other_products else 10,
+                max_steps=8 + (3 if other_products else 0),
                 scan_id=scan_id,
                 step_offset=step_offset,
                 timeout_s=_CHECKOUT_WALL_CLOCK_SECONDS,
@@ -1002,18 +1078,16 @@ async def _discover_one_angle(
     task = (
         f"You are a competitive-analysis research agent. Search angle: "
         f"'{angle_id}'.\n"
-        f"Goal: find {per_agent_count} independent DTC storefronts that "
-        "match this search. Read the top 8 organic results, visit each "
-        "brand's front page briefly to verify it's a real ecommerce "
-        "storefront (not a marketplace listing, blog post, review "
-        "article, or dead link).\n"
+        f"Goal: return {per_agent_count} independent DTC storefront URLs "
+        "that match this search. Read the search results page ONLY — "
+        "pull brand names + homepage URLs straight from the organic "
+        "results. Do NOT click into any result, do NOT visit front "
+        "pages, do NOT verify — downstream workers will price-check and "
+        "checkout-walk each URL. Just harvest URLs from the SERP.\n"
         "AVOID: Amazon, Walmart, Target, Best Buy, eBay, Etsy marketplace "
         "listings, review aggregators, comparison sites.\n"
         "PREFER: named brands with their own Shopify/WooCommerce/"
         "BigCommerce stores.\n"
-        "Do NOT click into product pages, do NOT add to cart, do NOT "
-        "create accounts — front page verification only. If a search "
-        "result is blocked by captcha or login, skip it.\n"
         "Return a ranked JSON list with name, url, and one-sentence "
         "rationale per competitor."
     )
@@ -1022,7 +1096,7 @@ async def _discover_one_angle(
             task=task,
             schema=CompetitorList,
             start_url=start_url,
-            max_steps=10,
+            max_steps=3,
             scan_id=scan_id,
             step_offset=step_offset,
             timeout_s=90.0,
@@ -1053,15 +1127,28 @@ async def discover_competitors_parallel(
     store_url: str,
     product_hint: Optional[str],
     custom_prompt: Optional[str],
+    target_categories: Optional[list[str]] = None,
     scan_id: Optional[str] = None,
     step_offset_base: int = 30,
-    per_agent_count: int = 5,
+    per_agent_count: int = 3,
 ) -> list[dict[str, Any]]:
     """Fan out to 4 browser-use cloud agents in parallel, each searching
     with a distinct angle. Returns a merged candidate list ranked by
     cross-agent frequency (URLs found by more agents come first).
+
+    When ``target_categories`` is provided (normalized generic product
+    types the target actually sells, e.g. ``["lifestyle sneaker", "cork
+    footbed clog"]``), those terms replace the user hint inside the
+    search-angle queries so discovery anchors on what the target stocks
+    rather than on vague user-supplied hints.
     """
-    hint = (product_hint or "").strip() or "similar products"
+    categories_clean = [
+        c.strip() for c in (target_categories or []) if c and c.strip()
+    ][:3]
+    if categories_clean:
+        hint = ", ".join(categories_clean)
+    else:
+        hint = (product_hint or "").strip() or "similar products"
     queries = [
         (angle_id, template.format(store_url=store_url, hint=hint))
         for angle_id, template in _DISCOVERY_ANGLES

@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     # (~60-90s, paid tokens). The live flow compares the target store
     # against the first N competitors that successfully reach their cart
     # pages; remaining candidates in the pool are cancelled once N is hit.
-    max_competitors: int = 4
+    max_competitors: int = 3
     # LLM the browser-use cloud task uses to drive navigation. Picked from
     # browser-use's model catalog; "browser-use-2.0" is their tuned default.
     browser_use_cloud_model: str = "browser-use-2.0"
@@ -47,6 +47,12 @@ class Settings(BaseSettings):
     competitor_discovery_via_agent: bool = False
 
     log_level: str = "INFO"
+    # File logging: when log_file is set, INFO+ goes to a rotating file
+    # and WARNING+ also echoes to stderr so critical events stay visible
+    # in the terminal. Set log_file="" to go back to stdout only.
+    log_file: str = "logs/backend.log"
+    log_file_max_bytes: int = 10_000_000
+    log_file_backup_count: int = 3
 
     # Force demo mode regardless of ANTHROPIC_API_KEY.
     demo_mode: bool = False
@@ -55,6 +61,8 @@ class Settings(BaseSettings):
     # Anthropic/BrowserUse cost surface on unauthenticated POST endpoints.
     rate_limit_scan_per_min: int = 10
     rate_limit_competitors_per_min: int = 10
+    # Per-scan fix-generation budget (keyed on scan_id, not client IP).
+    rate_limit_fix_per_min: int = 20
     # Memory cap for the rate limiter: at most this many distinct
     # (method,path,client_ip) buckets are kept; oldest evicted when full.
     rate_limit_max_buckets: int = 10_000

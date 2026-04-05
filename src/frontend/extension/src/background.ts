@@ -7,6 +7,7 @@ import type {
   ScanFinding,
   ScanStatus,
   AnnotationsResponse,
+  FixResponse,
   PopupState,
 } from "./types";
 
@@ -286,6 +287,46 @@ async function clearAnnotations() {
   }
 }
 
+async function handleFixFinding(findingId: string) {
+  const scanId = state.scanId;
+  if (!scanId || activeTabId == null) return;
+  try {
+    const res = await fetch(
+      `${API_BASE_URL}/scan/${encodeURIComponent(scanId)}/findings/${encodeURIComponent(findingId)}/fix`,
+      { method: "POST", headers: { "Content-Type": "application/json" } },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      await chrome.tabs
+        .sendMessage(activeTabId, {
+          type: "FIX_ERROR",
+          finding_id: findingId,
+          error: `HTTP ${res.status}: ${body.slice(0, 200)}`,
+        } satisfies ExtensionMessage)
+        .catch(() => {});
+      return;
+    }
+    const data = (await res.json()) as FixResponse;
+    await chrome.tabs
+      .sendMessage(activeTabId, {
+        type: "APPLY_FIX",
+        finding_id: data.finding_id,
+        operation: data.operation,
+      } satisfies ExtensionMessage)
+      .catch(() => {});
+  } catch (err) {
+    try {
+      await chrome.tabs.sendMessage(activeTabId, {
+        type: "FIX_ERROR",
+        finding_id: findingId,
+        error: String(err).slice(0, 200),
+      } satisfies ExtensionMessage);
+    } catch {
+      // tab closed — ignore
+    }
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, send) => {
   (async () => {
     if (msg.type === "START_SCAN") {
@@ -296,6 +337,11 @@ chrome.runtime.onMessage.addListener((msg: ExtensionMessage, _sender, send) => {
       send({ ok: true });
     } else if (msg.type === "GET_STATE") {
       send(state);
+    } else if (msg.type === "FIX_FINDING") {
+      // Don't block the reply — content script expects this to
+      // return quickly and will wait for APPLY_FIX / FIX_ERROR.
+      void handleFixFinding(msg.finding_id);
+      send({ ok: true });
     }
   })();
   return true; // async response

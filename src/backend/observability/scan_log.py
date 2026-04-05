@@ -13,8 +13,12 @@ from collections import OrderedDict, deque
 from typing import Deque
 
 # Competitor jobs fan out to multiple concurrent browser-use agents plus
-# discovery/synthesis stage markers, so per-scan capacity needs headroom.
-_MAX_ENTRIES_PER_SCAN = 100
+# discovery/synthesis stage markers + per-candidate cart walks + retries.
+# A full job can emit ~90-120 entries, and we need headroom so the early
+# discovery anchor entries (target, 4 discovery lanes, merge) stay
+# visible throughout the job — otherwise the frontend ReasoningFeed flips
+# from its multi-panel layout to the flat fallback when anchors evict.
+_MAX_ENTRIES_PER_SCAN = 500
 _MAX_SCANS_RETAINED = 200
 
 _lock = threading.Lock()

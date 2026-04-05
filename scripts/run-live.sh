@@ -81,7 +81,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+LOG_FILE="${LOG_FILE:-logs/backend.log}"
 echo "▸ backend (live)  on http://localhost:$BACKEND_PORT  (model=${ANTHROPIC_MODEL:-claude-opus-4-6})"
+echo "                  logs: $LOG_FILE  (warnings also echo to this terminal)"
 "$VENV_UVICORN" src.backend.main:app \
   --reload --host 127.0.0.1 --port "$BACKEND_PORT" &
 pids+=("$!")

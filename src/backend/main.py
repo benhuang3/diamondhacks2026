@@ -48,7 +48,12 @@ def _parse_cors(origins_raw: str) -> tuple[list[str], list[str]]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    configure_logging(settings.log_level)
+    configure_logging(
+        settings.log_level,
+        log_file=settings.log_file,
+        log_file_max_bytes=settings.log_file_max_bytes,
+        log_file_backup_count=settings.log_file_backup_count,
+    )
     if settings.ssrf_egress_guard:
         install_egress_guard()
     try:
@@ -64,6 +69,24 @@ def create_app() -> FastAPI:
     exact_origins, regex_origins = _parse_cors(settings.cors_origins)
     allow_origin_regex = "|".join(regex_origins) if regex_origins else None
 
+    # Middleware order matters — Starlette wraps in reverse add_middleware
+    # order, so the LAST add is OUTERMOST. We want the stack to be:
+    #   RequestContext (outermost, logs every request)
+    #     CORSMiddleware (adds Access-Control-* headers, including on 429s)
+    #       RateLimitMiddleware
+    #         route
+    # So we add in inside-out order: rate-limit first, CORS next, request
+    # context last. This guarantees 429 responses carry CORS headers so
+    # the browser can read the status instead of "Failed to fetch".
+    app.add_middleware(
+        RateLimitMiddleware,
+        rules={
+            ("POST", "/scan"): (settings.rate_limit_scan_per_min, 60),
+            ("POST", "/competitors"): (settings.rate_limit_competitors_per_min, 60),
+        },
+        max_buckets=settings.rate_limit_max_buckets,
+        trust_forwarded_for=settings.trust_forwarded_for,
+    )
     # The app is cookie-less and uses no browser-auth credentials, so we
     # disable allow_credentials. This neutralizes the ``chrome-extension://.*``
     # regex, since credentialed cross-origin requests are what made that
@@ -76,18 +99,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    app.add_middleware(
-        RateLimitMiddleware,
-        rules={
-            ("POST", "/scan"): (settings.rate_limit_scan_per_min, 60),
-            ("POST", "/competitors"): (settings.rate_limit_competitors_per_min, 60),
-        },
-        max_buckets=settings.rate_limit_max_buckets,
-        trust_forwarded_for=settings.trust_forwarded_for,
-    )
-    # Outermost so every request (including rate-limited ones) gets a
-    # request_id bound and an access-log line emitted.
     app.add_middleware(RequestContextMiddleware)
 
     @app.get("/health")

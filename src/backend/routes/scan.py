@@ -1,18 +1,22 @@
-"""Scan endpoints: POST /scan, GET /scan/{id}."""
+"""Scan endpoints: POST /scan, GET /scan/{id}, POST /scan/{id}/findings/{id}/fix."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 
 from ..models.scan import (
+    FixResponse,
     ScanCreateResponse,
     ScanListResponse,
     ScanRequest,
     ScanStatus,
 )
 from ..services.scan_service import (
+    FindingNotFoundError,
+    FixRateLimitError,
     fetch_scan_list,
     fetch_scan_status,
+    generate_finding_fix,
     start_scan,
 )
 from ..workers.scan_worker import run_scan
@@ -43,3 +47,23 @@ async def get_scan_endpoint(scan_id: str) -> ScanStatus:
     if not s:
         raise HTTPException(status_code=404, detail="scan not found")
     return s
+
+
+@router.post(
+    "/scan/{scan_id}/findings/{finding_id}/fix",
+    response_model=FixResponse,
+)
+async def generate_finding_fix_endpoint(
+    scan_id: str, finding_id: str
+) -> FixResponse:
+    try:
+        op = await generate_finding_fix(scan_id, finding_id)
+    except FindingNotFoundError:
+        raise HTTPException(status_code=404, detail="finding not found")
+    except FixRateLimitError as e:
+        raise HTTPException(
+            status_code=429,
+            detail="fix rate limit exceeded for this scan",
+            headers={"Retry-After": str(e.retry_after)},
+        )
+    return FixResponse(finding_id=finding_id, operation=op)

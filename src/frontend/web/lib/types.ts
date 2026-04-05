@@ -1,6 +1,6 @@
 // Mirrors CONTRACTS.md §2 pydantic models exactly.
 
-export type Status = "pending" | "running" | "done" | "failed";
+export type Status = "pending" | "running" | "done" | "failed" | "cancelled";
 export type Severity = "high" | "medium" | "low";
 export type Category = "a11y" | "ux" | "contrast" | "nav";
 export type ReportKind = "scan" | "competitors";

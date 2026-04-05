@@ -237,6 +237,15 @@ async def insert_findings_bulk(scan_id: str, findings: list[dict]) -> list[str]:
     return ids
 
 
+async def get_finding(finding_id: str) -> dict | None:
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(
+            select(ScanFinding).where(ScanFinding.id == finding_id)
+        )
+        row = result.scalars().first()
+        return _finding_to_dict(row) if row else None
+
+
 async def list_findings(scan_id: str) -> list[dict]:
     async with AsyncSessionLocal() as session:
         result = await session.execute(

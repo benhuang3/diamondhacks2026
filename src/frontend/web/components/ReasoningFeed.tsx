@@ -4,7 +4,7 @@ import * as React from "react";
 import type { ScanStep } from "@/lib/types";
 import { Card } from "./ui/card";
 
-const MAX_ENTRIES_PER_PANEL = 4;
+const MAX_ENTRIES_PER_PANEL = 1;
 
 const TARGET_LANE = "your store";
 const MERGE_LANE = "discover: merge";
@@ -39,25 +39,34 @@ function groupByLane(steps: ScanStep[]): Map<string, ScanStep[]> {
   return out;
 }
 
+// Render the agent's chain of reasoning as readable prose, not JSON.
+// Prefers next_goal (forward-looking) → evaluation (reflection) → memory.
+function reasoningText(step: ScanStep): string {
+  const parts = [step.next_goal, step.evaluation, step.memory]
+    .map((s) => (s || "").trim())
+    .filter((s) => s.length > 0 && s.toLowerCase() !== "null");
+  if (parts.length === 0) return `step ${step.step}`;
+  // Dedupe identical adjacent fragments.
+  const unique: string[] = [];
+  for (const p of parts) {
+    if (unique[unique.length - 1] !== p) unique.push(p);
+  }
+  return unique.join(" · ");
+}
+
 function Row({ step }: { step: ScanStep }) {
   const tone = sourceTone(step.source);
   return (
     <div className={`border-l-2 ${tone.border} pl-2 text-[11px] leading-snug`}>
-      <div className="flex items-center gap-1.5">
+      <div className="mb-0.5 flex items-center gap-1.5">
         <span
           className={`rounded px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide ${tone.chip}`}
         >
           {tone.label}
         </span>
-        <span className="truncate font-medium text-slate-900">
-          {step.next_goal || step.evaluation || `step ${step.step}`}
-        </span>
+        <span className="text-[9px] text-slate-400">step {step.step}</span>
       </div>
-      {step.actions && step.actions.length > 0 && (
-        <div className="mt-0.5 truncate font-mono text-[9px] text-slate-400">
-          → {step.actions.join(", ")}
-        </div>
-      )}
+      <p className="whitespace-pre-line text-slate-700">{reasoningText(step)}</p>
     </div>
   );
 }
@@ -71,9 +80,10 @@ function MiniPanel({
   steps: ScanStep[];
   compact?: boolean;
 }) {
-  // Slice to the last N messages. Box height never grows beyond this.
-  const limit = compact ? MAX_ENTRIES_PER_PANEL - 1 : MAX_ENTRIES_PER_PANEL;
-  const recent = steps.slice(-limit);
+  // Show only the latest message per panel — the agent's current
+  // chain-of-reasoning line. Keeps the layout stable and scannable.
+  void compact;
+  const recent = steps.slice(-MAX_ENTRIES_PER_PANEL);
   // Pick up any browser-use live-session URL from the first step that
   // carries one — lets the user pop open the live cloud browser window.
   const liveUrl = steps.find((s) => s.live_url)?.live_url || "";
@@ -103,6 +113,17 @@ function MiniPanel({
           ))
         )}
       </div>
+      {liveUrl && (
+        <a
+          href={liveUrl}
+          target="_blank"
+          rel="noreferrer"
+          className="mt-1 inline-flex items-center gap-1 self-start text-[10px] font-medium text-emerald-700 hover:text-emerald-900 hover:underline"
+          title="Open browser-use cloud live session"
+        >
+          ▶ watch live on browser-use cloud
+        </a>
+      )}
     </div>
   );
 }
@@ -133,8 +154,23 @@ export function ReasoningFeed({ steps }: { steps: ScanStep[] }) {
     MERGE_LANE,
     ...DISCOVERY_LANES,
   ]);
+  // Drop cart lanes that ended up being skipped / unscrapable — no
+  // point showing a panel whose only story is "we gave up on this one".
+  const isSkippedLane = (laneSteps: ScanStep[]): boolean =>
+    laneSteps.some((s) => {
+      const goal = (s.next_goal || "").toLowerCase();
+      const evalText = (s.evaluation || "").toLowerCase();
+      return (
+        goal.startsWith("skipped ") ||
+        evalText.startsWith("unsafe url") ||
+        evalText.includes("not scrape-able") ||
+        evalText.includes("not scrapeable")
+      );
+    });
+
   const extraLanes = Array.from(grouped.keys())
     .filter((l) => !usedLanes.has(l))
+    .filter((l) => !isSkippedLane(grouped.get(l) ?? []))
     .sort((a, b) => {
       const r = (l: string) =>
         l === "main"
@@ -157,7 +193,7 @@ export function ReasoningFeed({ steps }: { steps: ScanStep[] }) {
         </p>
         <div className="flex flex-col gap-1.5">
           {steps
-            .slice(-MAX_ENTRIES_PER_PANEL * 2)
+            .slice(-8)
             .map((s, i) => (
               <Row key={`${s.step}-${s.ts}-${i}`} step={s} />
             ))}

@@ -21,6 +21,7 @@ With a team of agents and a custom prompt (not necessary), the app scrapes the w
 3. Implement the feature so that attempts to check out and scans the pages along the way. It should do a shallow breadth first search to catalog pages then try to check out an item, to see shipping tax, other fees, and the final price.
 
 4. Can live-view the agents for competitor finder and scan
-5. 
+5. Improve 
+6. Put better dummy data
 
 

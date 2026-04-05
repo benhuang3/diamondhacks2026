@@ -26,7 +26,7 @@ from src.config.settings import settings
 
 from ..observability import scan_log
 from .browser_use_cloud import CloudAgentError, cloud_enabled, run_cloud_agent
-from .page_crawler_schemas import CrawlSnapshot, PageVisit
+from .page_crawler_schemas import CrawlSnapshot
 
 log = logging.getLogger(__name__)
 

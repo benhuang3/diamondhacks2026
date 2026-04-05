@@ -8,11 +8,15 @@ from src.db.queries import (
     create_competitor_job,
     get_competitor_job,
     list_competitor_results,
+    update_competitor_job,
 )
 
 from ..models.competitor import CompetitorJobStatus, CompetitorResult
 from ..models.scan import ScanStep
-from ..observability import scan_log
+from ..observability import cancellation, scan_log
+
+
+_TERMINAL_STATUSES = {"done", "failed", "cancelled"}
 
 
 async def start_competitor_job(
@@ -34,6 +38,27 @@ def _result_from_row(row: dict, job_id: str) -> CompetitorResult:
         checkout_total=row.get("checkout_total"),
         notes=row.get("notes") or "",
     )
+
+
+async def cancel_competitor_job(job_id: str) -> Optional[CompetitorJobStatus]:
+    """Mark a competitor job as cancelled. Returns the updated status,
+    or None if the job doesn't exist. No-op if the job is already in a
+    terminal state."""
+    job = await get_competitor_job(job_id)
+    if not job:
+        return None
+    current = job.get("status", "pending")
+    if current in _TERMINAL_STATUSES:
+        # Already terminal — don't overwrite.
+        return await fetch_competitor_job(job_id)
+    cancellation.mark_cancelled(job_id)
+    await update_competitor_job(
+        job_id,
+        status="cancelled",
+        error="cancelled by user",
+        progress=1.0,
+    )
+    return await fetch_competitor_job(job_id)
 
 
 async def fetch_competitor_job(job_id: str) -> Optional[CompetitorJobStatus]:

@@ -15,6 +15,7 @@ the UI looks the same from the caller's perspective.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any, Optional, Type, TypeVar
 
@@ -55,6 +56,107 @@ def cloud_enabled() -> bool:
 
 def _clamp(s: Any, n: int) -> str:
     return str(s or "")[:n]
+
+
+# Prose-ish keys a cloud model might use to wrap its real reasoning in
+# a JSON envelope. We prefer them in this order when humanizing.
+_REASONING_KEYS = (
+    "thinking", "thought", "reasoning", "rationale",
+    "next_goal", "goal", "plan",
+    "evaluation_previous_goal", "evaluation",
+    "summary", "memory", "observation", "text",
+)
+
+
+def _humanize(s: Any, limit: int = 300) -> str:
+    """Coerce a cloud-agent text field into readable prose.
+
+    Some browser-use cloud models emit ``next_goal`` / ``evaluation`` /
+    ``memory`` as JSON envelopes (``{"thinking": "…", "action": "…"}``)
+    rather than plain strings. When that happens we unwrap to the
+    longest useful string value inside the envelope. Plain text passes
+    through unchanged.
+    """
+    raw = str(s or "").strip()
+    if not raw:
+        return ""
+    if raw[0] not in "{[":
+        return raw[:limit]
+    try:
+        obj = json.loads(raw)
+    except Exception:  # noqa: BLE001
+        return raw[:limit]
+
+    def _extract(node: Any, depth: int = 0) -> str:
+        if depth > 3:
+            return ""
+        if isinstance(node, str):
+            return node
+        if isinstance(node, list):
+            parts = [p for p in (_extract(x, depth + 1) for x in node) if p]
+            return " · ".join(parts)
+        if isinstance(node, dict):
+            # Prefer well-known reasoning keys in priority order.
+            for k in _REASONING_KEYS:
+                if k in node:
+                    v = _extract(node[k], depth + 1)
+                    if v:
+                        return v
+            # Otherwise take the longest string-ish descendant.
+            best = ""
+            for v in node.values():
+                cand = _extract(v, depth + 1)
+                if len(cand) > len(best):
+                    best = cand
+            return best
+        return ""
+
+    out = _extract(obj).strip()
+    return (out or raw)[:limit]
+
+
+def _action_name(a: Any) -> str:
+    """Extract a readable action name from a cloud SDK action entry.
+
+    Cloud agent steps carry ``actions`` as dicts of the form
+    ``{"click_element": {"index": 5}}`` — the key is the action name,
+    the value is its parameters. Pydantic tools may also return objects
+    with ``model_dump``. Fall back to the string form for anything
+    else. Returns the name only — never the JSON blob — so the scanner
+    sidebar shows readable tokens instead of stringified dicts.
+    """
+    if isinstance(a, str):
+        # Cloud SDK's TaskStepView emits each action as a stringified
+        # JSON blob like '{"click": {"index": 831}}'. Parse it and pull
+        # the first key (the action name) so the sidebar shows
+        # "click" instead of the whole JSON object.
+        s = a.strip()
+        if s.startswith("{"):
+            try:
+                obj = json.loads(s)
+            except Exception:  # noqa: BLE001
+                obj = None
+            if isinstance(obj, dict):
+                for k in obj.keys():
+                    return str(k)[:40]
+        return s[:40]
+    if isinstance(a, dict):
+        for k in a.keys():
+            return str(k)[:40]
+        return ""
+    dump = getattr(a, "model_dump", None)
+    if callable(dump):
+        try:
+            d = dump(exclude_unset=True)
+        except Exception:  # noqa: BLE001
+            d = None
+        if isinstance(d, dict):
+            for k in d.keys():
+                return str(k)[:40]
+    name = getattr(a, "name", None) or getattr(a, "type", None)
+    if name:
+        return str(name)[:40]
+    return str(a)[:40]
 
 
 async def run_cloud_agent(
@@ -180,16 +282,19 @@ async def run_cloud_agent(
                             "step": int(getattr(step, "number", 0)) + step_offset,
                             "source": "browser-use",
                             "lane": lane,
-                            "evaluation": _clamp(
+                            "evaluation": _humanize(
                                 getattr(step, "evaluation_previous_goal", ""), 300
                             ),
-                            "memory": _clamp(getattr(step, "memory", ""), 300),
-                            "next_goal": _clamp(
+                            "memory": _humanize(getattr(step, "memory", ""), 300),
+                            "next_goal": _humanize(
                                 getattr(step, "next_goal", ""), 300
                             ),
-                            "actions": list(
-                                getattr(step, "actions", []) or []
-                            )[:3],
+                            "actions": [
+                                _action_name(a)
+                                for a in (
+                                    getattr(step, "actions", []) or []
+                                )[:3]
+                            ],
                         },
                     )
             last_seen = len(steps)

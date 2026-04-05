@@ -145,6 +145,20 @@ export async function getCompetitorJob(
   }
 }
 
+export async function cancelCompetitorJob(
+  jobId: string,
+): Promise<CompetitorJobStatus | null> {
+  if (DEMO_MODE) return null;
+  try {
+    return await safeFetch<CompetitorJobStatus>(
+      `/competitors/${jobId}/cancel`,
+      { method: "POST" },
+    );
+  } catch {
+    return null;
+  }
+}
+
 export async function getReport(reportId: string): Promise<Report> {
   if (DEMO_MODE) return demoReport(reportId);
   try {

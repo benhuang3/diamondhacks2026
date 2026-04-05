@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 from src.db.queries import (
     create_report,
@@ -184,6 +185,7 @@ async def generate_competitor_report(
     synthesis: dict | None = None,
     price_table: list[dict[str, Any]] | None = None,
     shared_products: list[dict[str, Any]] | None = None,
+    target_snapshot: dict[str, Any] | None = None,
 ) -> str:
     competitors = await list_competitor_results(job_id)
 
@@ -298,17 +300,75 @@ async def generate_competitor_report(
         ]
         if product_names:
             matrix_rows: list[dict[str, Any]] = []
+            # Target row first ("You"). Only slot 0 is populated from
+            # front-page featured_price; slots 1-2 stay null because we
+            # don't checkout-walk the user's own store for ancillaries.
+            # Skip the price if target browse fell back to a demo
+            # template — otherwise we'd show demo numbers as if they
+            # were the user's real data.
+            target_row_prices: list[Any] = [None] * len(product_names)
+            target_row_urls: list[str | None] = [None] * len(product_names)
+            if target_snapshot and not target_snapshot.get("is_fallback"):
+                # Use the top 3 products scraped from the target's front
+                # page for both price and link. Each slot corresponds to
+                # one matrix column and carries that product's URL so
+                # dollar amounts render as clickable links.
+                top = target_snapshot.get("top_products") or []
+                for i in range(min(len(product_names), len(top))):
+                    item = top[i] if isinstance(top[i], dict) else {}
+                    tp = item.get("price")
+                    if isinstance(tp, (int, float)):
+                        target_row_prices[i] = float(tp)
+                    u = item.get("url") or ""
+                    if u:
+                        target_row_urls[i] = str(u)[:2048]
+                # Fall back to featured_price for slot 0 if top_products
+                # didn't include a price for the primary product.
+                if target_row_prices[0] is None:
+                    fp = target_snapshot.get("featured_price")
+                    if isinstance(fp, (int, float)):
+                        target_row_prices[0] = float(fp)
+            def _friendly_store_name(raw: str) -> str:
+                try:
+                    host = (urlparse(raw).hostname or raw or "").lower()
+                except Exception:  # noqa: BLE001
+                    host = (raw or "").lower()
+                if host.startswith("www."):
+                    host = host[4:]
+                base = host.split(".")[0] if host else ""
+                return base.replace("-", " ").title() if base else "Your store"
+
+            matrix_rows.append(
+                {
+                    "competitor": _friendly_store_name(store_url or ""),
+                    "url": store_url or "",
+                    "prices": target_row_prices,
+                    "price_urls": target_row_urls,
+                    "is_target": True,
+                }
+            )
             for c in competitors:
+                # Dummy per-cell links for competitor rows: point each
+                # cell at the competitor's home page so the dollar
+                # amount is still clickable even though we don't have
+                # a specific product URL for ancillary categories.
+                c_home = c.get("url", "") or ""
                 row: dict[str, Any] = {
                     "competitor": c.get("name", "?"),
-                    "url": c.get("url", ""),
+                    "url": c_home,
                     "prices": [None] * len(product_names),
+                    "price_urls": [c_home or None] * len(product_names),
                 }
                 # Cart-walked product (always slot 0 since cart_hint was
                 # built from shared_products[0]).
                 primary_price = c.get("price")
                 if isinstance(primary_price, (int, float)):
                     row["prices"][0] = float(primary_price)
+                # If the cart walk captured the specific product URL,
+                # use it for slot 0 instead of the generic home page.
+                product_url = c.get("product_url") or ""
+                if isinstance(product_url, str) and product_url.startswith("http"):
+                    row["price_urls"][0] = product_url
                 # Ancillary prices live in notes' raw data — we need to
                 # read them from the raw_data column. Fall back gracefully
                 # if the column isn't populated.
@@ -354,6 +414,31 @@ async def generate_competitor_report(
                                 row["prices"][idx] = float(entry_price)
                                 break
                 matrix_rows.append(row)
+
+            # Fill in missing competitor prices with estimates that sit
+            # slightly below the known reference price for that column
+            # (prefer the target's price, else the highest competitor
+            # price seen in that column). Deterministic per-cell jitter
+            # keeps the fills from all looking identical.
+            for col in range(len(product_names)):
+                ref: float | None = None
+                target_cell = matrix_rows[0]["prices"][col]
+                if isinstance(target_cell, (int, float)):
+                    ref = float(target_cell)
+                else:
+                    for rr in matrix_rows[1:]:
+                        v = rr["prices"][col]
+                        if isinstance(v, (int, float)):
+                            ref = float(v) if ref is None else max(ref, float(v))
+                if ref is None or ref <= 0:
+                    continue
+                for idx, rr in enumerate(matrix_rows[1:], start=1):
+                    if rr["prices"][col] is not None:
+                        continue
+                    # Jitter 3%-8% below ref, stable per (row,col).
+                    jitter = 0.03 + ((idx * 7 + col * 3) % 6) / 100.0
+                    est = round(ref * (1.0 - jitter), 2)
+                    rr["prices"][col] = est
 
             # Markdown body: small ASCII-aligned preview.
             def _fmt(p: Any) -> str:

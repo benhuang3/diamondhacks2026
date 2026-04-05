@@ -7,9 +7,18 @@ enforced at the model layer to keep downstream Claude prompts bounded.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _none_to_empty_list(v: Any) -> Any:
+    """Coerce None → [] for list fields.
+
+    The browser-use cloud agent occasionally emits ``null`` for array
+    fields when it observed nothing. Pydantic v2 rejects that by default
+    for ``list[...]`` types, so we unify the two shapes at the edge."""
+    return [] if v is None else v
 
 
 class CompetitorSnapshot(BaseModel):
@@ -40,9 +49,20 @@ class CompetitorSnapshot(BaseModel):
     )
     notes: str = Field(
         default="",
-        max_length=500,
-        description="Other observations, <=500 chars",
+        max_length=160,
+        description="One short observation, <=160 chars",
     )
+    top_products: list["OtherProductPrice"] = Field(
+        default_factory=list,
+        description=(
+            "Top 3 most popular products on the front page / best-sellers "
+            "section, each with its price in USD. Leave empty if unclear."
+        ),
+    )
+
+    _coerce_lists = field_validator(
+        "promos", "top_products", mode="before"
+    )(_none_to_empty_list)
 
 
 class OtherProductPrice(BaseModel):
@@ -50,6 +70,7 @@ class OtherProductPrice(BaseModel):
 
     product: str = Field(default="", max_length=160)
     price: Optional[float] = None
+    url: str = Field(default="", max_length=2048)
 
 
 class CheckoutSnapshot(BaseModel):
@@ -73,12 +94,16 @@ class CheckoutSnapshot(BaseModel):
     checkout_total: Optional[float] = None
     promos: list[str] = Field(default_factory=list)
     shipping_note: str = Field(default="", max_length=200)
-    notes: str = Field(default="", max_length=500)
+    notes: str = Field(default="", max_length=160)
     reached_checkout: bool = False
     # Prices for OTHER shared product categories spotted in passing while
     # browsing (catalog page, nav, related products). No extra clicks —
     # empty list is fine when the agent can't find them.
     other_product_prices: list[OtherProductPrice] = Field(default_factory=list)
+
+    _coerce_lists = field_validator(
+        "pages_visited", "promos", "other_product_prices", mode="before"
+    )(_none_to_empty_list)
 
 
 class DiscoveredCompetitor(BaseModel):
@@ -94,6 +119,10 @@ class CompetitorList(BaseModel):
 
     competitors: list[DiscoveredCompetitor] = Field(default_factory=list)
 
+    _coerce_lists = field_validator("competitors", mode="before")(
+        _none_to_empty_list
+    )
+
 
 class SharedProduct(BaseModel):
     """One product type that the target store + competitors likely share."""
@@ -108,3 +137,12 @@ class SharedProductList(BaseModel):
     """Top-3 shared product types across target + competitors."""
 
     products: list[SharedProduct] = Field(default_factory=list)
+
+    _coerce_lists = field_validator("products", mode="before")(
+        _none_to_empty_list
+    )
+
+
+# Forward-ref resolution: CompetitorSnapshot references OtherProductPrice
+# (declared below) via a string annotation, so rebuild once both are defined.
+CompetitorSnapshot.model_rebuild()

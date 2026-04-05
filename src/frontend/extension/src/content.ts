@@ -1,6 +1,12 @@
 // Injected on every page. Receives annotations from background and overlays them on the DOM.
 
-import type { ExtensionMessage, ScanFinding, ScanStatus, ScanStep } from "./types";
+import type {
+  ExtensionMessage,
+  FixOperation,
+  ScanFinding,
+  ScanStatus,
+  ScanStep,
+} from "./types";
 
 const OVERLAY_CLASS = "sr-highlight";
 const TOOLTIP_CLASS = "sr-tooltip";
@@ -17,6 +23,20 @@ let sidebarCollapsed = false;
 let currentStatus: ScanStatus | null = null;
 let currentAnnotations: ScanFinding[] = [];
 let currentLocated: Set<string> = new Set();
+
+// Applied fix state. Persists across sidebar re-renders so that a
+// SIDEBAR_STATUS poll doesn't flash the button back to "Fix".
+type UndoHandle =
+  | { kind: "css"; styleEl: HTMLStyleElement }
+  | { kind: "attribute"; el: HTMLElement; name: string; prev: string | null }
+  | { kind: "class"; el: HTMLElement; added: string[] };
+const appliedFixes = new Map<string, UndoHandle>();
+const pendingFixes = new Set<string>();
+const fixErrors = new Map<string, string>();
+
+// Click-to-expand state for finding description text. Persists across
+// re-renders so SIDEBAR_STATUS polls don't collapse an open card.
+const expandedFindings = new Set<string>();
 
 function statusFingerprint(s: ScanStatus | null): string {
   if (!s) return "";
@@ -195,6 +215,13 @@ function injectAnnotations(annotations: ScanFinding[]) {
   }
   currentAnnotations = annotations;
   currentLocated = located;
+  // Prune expanded state to IDs that still exist in the new set.
+  if (expandedFindings.size) {
+    const valid = new Set(annotations.map((f) => f.id));
+    for (const id of [...expandedFindings]) {
+      if (!valid.has(id)) expandedFindings.delete(id);
+    }
+  }
   renderUnifiedSidebar();
 }
 
@@ -207,6 +234,7 @@ function clearAnnotations() {
   currentLocated = new Set();
   currentStatus = null;
   lastRenderFingerprint = "";
+  expandedFindings.clear();
 }
 
 const SEVERITY_ORDER: Record<string, number> = { high: 0, medium: 1, low: 2 };
@@ -285,12 +313,15 @@ function createFindingItem(
   f: ScanFinding,
   located: Set<string>,
   isCrossPage: boolean,
-): HTMLButtonElement {
+): HTMLDivElement {
+  const row = document.createElement("div");
+  row.className = "sr-item-row";
   const item = document.createElement("button");
   item.type = "button";
   const hasLocation = !isCrossPage && located.has(f.id);
   const noLocation = !isCrossPage && !hasLocation;
-  item.className = `sr-sidebar-item sr-sev-${f.severity}${noLocation ? " sr-no-location" : ""}${isCrossPage ? " sr-cross-page" : ""}`;
+  const isExpanded = expandedFindings.has(f.id);
+  item.className = `sr-sidebar-item sr-sev-${f.severity}${noLocation ? " sr-no-location" : ""}${isCrossPage ? " sr-cross-page" : ""}${isExpanded ? " sr-item-expanded" : ""}`;
   item.dataset.srFindingId = f.id;
   if (noLocation) {
     item.disabled = true;
@@ -323,9 +354,64 @@ function createFindingItem(
       window.location.assign(f.page_url);
     });
   } else if (hasLocation) {
-    item.addEventListener("click", () => focusFinding(f.id));
+    item.addEventListener("click", () => {
+      focusFinding(f.id);
+      // Toggle expanded-description state directly on the DOM so the
+      // click feels instant — no re-render round-trip.
+      const nowExpanded = !expandedFindings.has(f.id);
+      if (nowExpanded) expandedFindings.add(f.id);
+      else expandedFindings.delete(f.id);
+      item.classList.toggle("sr-item-expanded", nowExpanded);
+    });
   }
-  return item;
+  row.appendChild(item);
+
+  // Fix button — any same-page finding can request a fix. CSS-kind
+  // fixes self-scope via their selector text and don't depend on
+  // resolveElement having succeeded; attribute/class fixes surface an
+  // inline error at apply time when the selector doesn't resolve.
+  if (!isCrossPage) {
+    row.appendChild(createFixButton(f.id, f.title));
+  }
+  // Error subtext (if the last fix attempt failed).
+  const err = fixErrors.get(f.id);
+  if (err) {
+    const errEl = document.createElement("div");
+    errEl.className = "sr-fix-error";
+    errEl.textContent = err;
+    row.appendChild(errEl);
+  }
+  return row;
+}
+
+function createFixButton(findingId: string, findingTitle: string): HTMLButtonElement {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "sr-fix-btn";
+  const isApplied = appliedFixes.has(findingId);
+  const isPending = pendingFixes.has(findingId);
+  if (isPending) {
+    btn.textContent = "…";
+    btn.disabled = true;
+    btn.classList.add("sr-fix-pending");
+    btn.setAttribute("aria-label", `Generating fix for: ${findingTitle}`);
+  } else if (isApplied) {
+    btn.textContent = "Undo ↺";
+    btn.classList.add("sr-fix-applied");
+    btn.setAttribute("aria-label", `Undo fix for: ${findingTitle}`);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      undoFix(findingId);
+    });
+  } else {
+    btn.textContent = "Fix";
+    btn.setAttribute("aria-label", `Apply fix for: ${findingTitle}`);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      requestFix(findingId);
+    });
+  }
+  return btn;
 }
 
 function renderPageGroup(
@@ -397,10 +483,11 @@ function captureFeedScrollState():
 function renderReasoningPanel(
   steps: ScanStep[],
   scanActive: boolean,
+  expanded: boolean,
   prevScroll: { top: number; atBottom: boolean } | null,
 ): HTMLDivElement {
   const wrap = document.createElement("div");
-  wrap.className = "sr-reasoning";
+  wrap.className = "sr-reasoning" + (expanded ? " sr-reasoning-expanded" : "");
   const headerRow = document.createElement("div");
   headerRow.className = "sr-reasoning-header";
   const label = document.createElement("div");
@@ -552,13 +639,43 @@ function renderUnifiedSidebar() {
       err.textContent = status.error.slice(0, 160);
       meta.appendChild(err);
     }
+    // Surface the browser-use cloud live-session URL at the top of the
+    // sidebar as soon as any step emits one — gives the user a one-click
+    // way to watch the agent navigate while the scan is still running.
+    if (scanActive) {
+      const steps = status.steps || [];
+      let liveUrl: string | null = null;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const u = steps[i].live_url;
+        if (u && (u.startsWith("https://") || u.startsWith("http://"))) {
+          liveUrl = u;
+          break;
+        }
+      }
+      if (liveUrl) {
+        const watchLink = document.createElement("a");
+        watchLink.className = "sr-live-link sr-live-link-meta";
+        watchLink.href = liveUrl;
+        watchLink.target = "_blank";
+        watchLink.rel = "noopener noreferrer";
+        watchLink.textContent = "● Watch live ↗";
+        watchLink.title = "Open the browser-use cloud live session";
+        meta.appendChild(watchLink);
+      }
+    }
     sidebar.appendChild(meta);
   }
 
   // Reasoning feed — always present when we have steps.
   const steps = status?.steps || [];
   if (steps.length > 0) {
-    sidebar.appendChild(renderReasoningPanel(steps, scanActive, prevScroll));
+    // Expand the reasoning panel to fill the sidebar while the scan is
+    // still running and no findings have been posted yet — retract it
+    // to a short strip once results arrive (or the scan ends).
+    const expanded = scanActive && !hasFindings;
+    sidebar.appendChild(
+      renderReasoningPanel(steps, scanActive, expanded, prevScroll),
+    );
   }
 
   if (hasFindings) {
@@ -623,9 +740,136 @@ function focusFinding(findingId: string) {
   if (item) item.classList.add("sr-active");
 }
 
+// --- Fix apply / undo -----------------------------------------------------
+
+function requestFix(findingId: string) {
+  if (appliedFixes.has(findingId) || pendingFixes.has(findingId)) return;
+  pendingFixes.add(findingId);
+  fixErrors.delete(findingId);
+  renderUnifiedSidebar();
+  chrome.runtime
+    .sendMessage({ type: "FIX_FINDING", finding_id: findingId })
+    .catch(() => {
+      // service worker gone — clear loading state
+      pendingFixes.delete(findingId);
+      fixErrors.set(findingId, "extension disconnected");
+      renderUnifiedSidebar();
+    });
+}
+
+function applyFixOperation(findingId: string, op: FixOperation) {
+  pendingFixes.delete(findingId);
+  // If the finding no longer exists (user cleared / re-scanned while the
+  // request was in flight), drop the fix — applying it would leave a
+  // DOM mutation with no UI path to undo it.
+  const stillPresent = currentAnnotations.some((f) => f.id === findingId);
+  if (!stillPresent) {
+    fixErrors.delete(findingId);
+    return;
+  }
+  fixErrors.delete(findingId);
+  if (op.kind === "none") {
+    fixErrors.set(findingId, op.reason || "no safe fix available");
+    renderUnifiedSidebar();
+    return;
+  }
+  try {
+    const handle = executeFix(op);
+    if (handle) appliedFixes.set(findingId, handle);
+    else fixErrors.set(findingId, "couldn't find element to fix");
+  } catch (err) {
+    fixErrors.set(findingId, `apply failed: ${String(err).slice(0, 120)}`);
+  }
+  renderUnifiedSidebar();
+}
+
+// Sweep orphan fix <style> tags left over from a previous content-script
+// run (the page reloaded with a fix still applied). Called on startup.
+function sweepOrphanFixStyles() {
+  document
+    .querySelectorAll("style[data-sr-fix]")
+    .forEach((n) => n.remove());
+}
+sweepOrphanFixStyles();
+
+function executeFix(op: FixOperation): UndoHandle | null {
+  if (op.kind === "css") {
+    const styleEl = document.createElement("style");
+    styleEl.setAttribute("data-sr-fix", "1");
+    styleEl.textContent = op.rules;
+    document.head.appendChild(styleEl);
+    return { kind: "css", styleEl };
+  }
+  if (op.kind === "attribute") {
+    const el = safeQuery(op.selector);
+    if (!el) return null;
+    const prev = el.hasAttribute(op.name) ? el.getAttribute(op.name) : null;
+    el.setAttribute(op.name, op.value);
+    return { kind: "attribute", el, name: op.name, prev };
+  }
+  if (op.kind === "class") {
+    const el = safeQuery(op.selector);
+    if (!el) return null;
+    const tokens = op.classes.split(/\s+/).filter(Boolean);
+    const added: string[] = [];
+    for (const t of tokens) {
+      if (!el.classList.contains(t)) {
+        el.classList.add(t);
+        added.push(t);
+      }
+    }
+    return { kind: "class", el, added };
+  }
+  return null;
+}
+
+function safeQuery(selector: string): HTMLElement | null {
+  try {
+    const el = document.querySelector(selector);
+    return el instanceof HTMLElement ? el : null;
+  } catch {
+    return null;
+  }
+}
+
+function revertFixHandle(handle: UndoHandle) {
+  try {
+    if (handle.kind === "css") {
+      handle.styleEl.remove();
+    } else if (handle.kind === "attribute") {
+      if (handle.prev === null) handle.el.removeAttribute(handle.name);
+      else handle.el.setAttribute(handle.name, handle.prev);
+    } else if (handle.kind === "class") {
+      if (handle.added.length)
+        handle.el.classList.remove(...handle.added);
+    }
+  } catch {
+    // best-effort — element may have been removed
+  }
+}
+
+function undoFix(findingId: string) {
+  const handle = appliedFixes.get(findingId);
+  if (!handle) return;
+  revertFixHandle(handle);
+  appliedFixes.delete(findingId);
+  renderUnifiedSidebar();
+}
+
+function undoAllFixes() {
+  for (const handle of appliedFixes.values()) revertFixHandle(handle);
+  appliedFixes.clear();
+  pendingFixes.clear();
+  fixErrors.clear();
+  // Caller triggers the single subsequent render.
+}
+
 chrome.runtime.onMessage.addListener(
   (msg: ExtensionMessage, _sender, send) => {
     if (msg.type === "INJECT_ANNOTATIONS") {
+      // New findings arriving — any previously-applied fixes refer to
+      // stale IDs and possibly stale DOM, undo them first.
+      undoAllFixes();
       injectAnnotations(msg.annotations);
       send({ ok: true, injected: msg.annotations.length });
     } else if (msg.type === "SIDEBAR_STATUS") {
@@ -637,8 +881,17 @@ chrome.runtime.onMessage.addListener(
       }
       send({ ok: true });
     } else if (msg.type === "CLEAR_ANNOTATIONS") {
+      undoAllFixes();
       clearAnnotations();
       sidebarCollapsed = false;
+      send({ ok: true });
+    } else if (msg.type === "APPLY_FIX") {
+      applyFixOperation(msg.finding_id, msg.operation);
+      send({ ok: true });
+    } else if (msg.type === "FIX_ERROR") {
+      pendingFixes.delete(msg.finding_id);
+      fixErrors.set(msg.finding_id, msg.error);
+      renderUnifiedSidebar();
       send({ ok: true });
     } else if (msg.type === "PING") {
       send({ ok: true });

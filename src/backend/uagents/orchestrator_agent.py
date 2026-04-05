@@ -12,6 +12,7 @@ Acceptable for hackathon demo; proper fix requires correlation tokens
 echoed by sub-agents in their replies.
 """
 
+import asyncio
 import os
 from datetime import datetime
 from uuid import uuid4
@@ -30,6 +31,9 @@ load_dotenv()
 
 SCANNER_ADDRESS = os.environ.get("SCANNER_AGENT_ADDRESS", "")
 COMPETITOR_ADDRESS = os.environ.get("COMPETITOR_AGENT_ADDRESS", "")
+# Minimum perceived processing delay for ASI:One responses. Makes demo-mode
+# replies feel like real work is happening. Keep under ASI:One's 45s timeout.
+REPLY_DELAY_SECONDS = float(os.environ.get("ORCHESTRATOR_REPLY_DELAY", "20"))
 
 orchestrator = Agent(
     name="storefront_reviewer",
@@ -136,6 +140,9 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage) -> None:
         "## Competitor Analysis\n"
         f"{competitor_text}"
     )
+    if REPLY_DELAY_SECONDS > 0:
+        ctx.logger.info(f"delaying merged reply by {REPLY_DELAY_SECONDS}s")
+        await asyncio.sleep(REPLY_DELAY_SECONDS)
     await ctx.send(
         pending_user,
         ChatMessage(

@@ -3,8 +3,13 @@
 import * as React from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useCompetitorPolling, getReport } from "@/lib/api";
+import {
+  useCompetitorPolling,
+  getReport,
+  cancelCompetitorJob,
+} from "@/lib/api";
 import type { Report } from "@/lib/types";
+import { Button } from "@/components/ui/button";
 import { PriceDeltaChart } from "@/components/PriceDeltaChart";
 import { PriceBreakdownChart } from "@/components/PriceBreakdownChart";
 import { PriceMatrixTable } from "@/components/PriceMatrixTable";
@@ -37,6 +42,17 @@ export default function CompetitorReportPage() {
   const pct = Math.round((status?.progress ?? 0) * 100);
   const isRunning =
     status?.status === "pending" || status?.status === "running";
+  const [stopping, setStopping] = React.useState(false);
+
+  const handleStop = React.useCallback(async () => {
+    setStopping(true);
+    try {
+      await cancelCompetitorJob(jobId);
+    } finally {
+      // Keep the "Stopping…" label until the next poll reflects the
+      // cancelled status — then the button unmounts.
+    }
+  }, [jobId]);
 
   const competitors = status?.competitors ?? [];
 
@@ -58,13 +74,24 @@ export default function CompetitorReportPage() {
               variant={
                 status.status === "done"
                   ? "success"
-                  : status.status === "failed"
+                  : status.status === "failed" || status.status === "cancelled"
                     ? "high"
                     : "medium"
               }
             >
               {status.status}
             </Badge>
+          )}
+          {isRunning && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={handleStop}
+              disabled={stopping}
+              className="ml-auto"
+            >
+              {stopping ? "Stopping…" : "Stop"}
+            </Button>
           )}
         </div>
         {status && (
@@ -112,6 +139,7 @@ export default function CompetitorReportPage() {
                   competitor: string;
                   url: string;
                   prices: (number | null)[];
+                  price_urls?: (string | null)[];
                 }[];
               };
             }
@@ -127,7 +155,7 @@ export default function CompetitorReportPage() {
         );
       })()}
 
-      {(() => {
+      {!isRunning && (() => {
         const section = report?.sections.find(
           (s) => s.title === "Extra fees (shipping + tax)",
         );
@@ -156,11 +184,11 @@ export default function CompetitorReportPage() {
         return <PriceBreakdownChart data={adapted} body={section?.body} />;
       })()}
 
-      {competitors.some((c) => c.checkout_total != null) && (
+      {!isRunning && competitors.some((c) => c.checkout_total != null) && (
         <PriceDeltaChart competitors={competitors} />
       )}
 
-      {competitors.length > 0 && (
+      {!isRunning && competitors.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>Competitors ({competitors.length})</CardTitle>

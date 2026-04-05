@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 import random
+import re
 from typing import Any
 
 from src.config.settings import settings
@@ -29,6 +30,11 @@ from ..security.url_guard import (
 from .report_generator import generate_scan_report
 
 log = logging.getLogger(__name__)
+
+# Extract completed "title": "..." values from in-flight JSON streams.
+# Handles escape sequences. Used for live streaming of finding titles
+# into scan_log while Claude is generating the findings array.
+_TITLE_RE = re.compile(r'"title"\s*:\s*"((?:[^"\\]|\\.)*)"')
 
 
 DEMO_FINDINGS_TEMPLATE: list[dict[str, Any]] = [
@@ -217,8 +223,33 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
             missing_alt=page.get("missing_alt_images", 0),
             low_contrast=page.get("low_contrast_count", 0),
         )
-        start_step = 200 + idx * 2
-        done_step = start_step + 1
+        # 10-wide step band per page: start, 8 live updates, done.
+        start_step = 200 + idx * 10
+        done_step = start_step + 9
+        stream_state = {"last_count": 0, "step_cursor": start_step + 1}
+
+        def _on_stream(accumulated: str) -> None:
+            # Extract all completed "title": "..." pairs from the
+            # in-flight JSON. Every newly-seen title gets its own
+            # scan_log line so the sidebar updates as findings emerge.
+            titles = _TITLE_RE.findall(accumulated)
+            if len(titles) <= stream_state["last_count"]:
+                return
+            for t in titles[stream_state["last_count"]:]:
+                if stream_state["step_cursor"] >= done_step:
+                    break
+                scan_log.append(
+                    scan_id,
+                    {
+                        "step": stream_state["step_cursor"],
+                        "source": "claude",
+                        "lane": "claude",
+                        "next_goal": f"found: {t.strip()[:120]}",
+                    },
+                )
+                stream_state["step_cursor"] += 1
+            stream_state["last_count"] = len(titles)
+
         async with sem:
             scan_log.append(
                 scan_id,
@@ -230,10 +261,11 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
                 },
             )
             try:
-                text = await client.complete(
+                text = await client.stream_complete(
                     prompt_text,
                     system=prompts.SYSTEM_SCAN,
                     max_tokens=2048,
+                    on_text=_on_stream,
                 )
             except DemoFallbackError as e:
                 log.info(
@@ -253,19 +285,7 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
             parsed = _extract_json_array(text)
             items: list[dict[str, Any]] = []
             for item in (parsed or [])[:per_page_cap]:
-                items.append(
-                    {
-                        "selector": item.get("selector", "body"),
-                        "xpath": item.get("xpath"),
-                        "bounding_box": item.get("bounding_box"),
-                        "severity": item.get("severity", "medium"),
-                        "category": item.get("category", "ux"),
-                        "title": item.get("title", "Finding"),
-                        "description": item.get("description", ""),
-                        "suggestion": item.get("suggestion", ""),
-                        "page_url": page_url,
-                    }
-                )
+                items.append(_normalize_finding(item, page_url))
             scan_log.append(
                 scan_id,
                 {
@@ -316,6 +336,49 @@ async def _run_live(scan_id: str, url: str, max_pages: int) -> None:
 
 _MAX_ELEMENTS_FOR_PROMPT = 40
 _MAX_ELEMENTS_SERIALIZED_CHARS = 4000
+
+# Enums enforced on findings we persist. Claude occasionally emits
+# out-of-set values (e.g. "critical", "accessibility") which Pydantic
+# Literal types reject at response-serialization time → 500 on
+# GET /annotations/{id}. Normalize at write time.
+_VALID_SEVERITIES = {"high", "medium", "low"}
+_VALID_CATEGORIES = {"a11y", "ux", "contrast", "nav"}
+
+
+def _str_or(item: dict[str, Any], key: str, default: str) -> str:
+    """Return str(item[key]) or `default` if missing/None/empty."""
+    v = item.get(key)
+    if v is None:
+        return default
+    s = str(v).strip()
+    return s or default
+
+
+def _normalize_finding(item: dict[str, Any], page_url: str) -> dict[str, Any]:
+    """Coerce a single Claude-emitted finding into the shape the DB +
+    Pydantic response models require. Defends against missing/null
+    values, out-of-enum strings, and overly long strings."""
+    sev_raw = _str_or(item, "severity", "medium").lower()
+    severity = sev_raw if sev_raw in _VALID_SEVERITIES else "medium"
+    cat_raw = _str_or(item, "category", "ux").lower()
+    category = cat_raw if cat_raw in _VALID_CATEGORIES else "ux"
+    xpath = item.get("xpath")
+    if xpath is not None:
+        xpath = str(xpath)[:500] or None
+    bbox = item.get("bounding_box")
+    if not isinstance(bbox, dict):
+        bbox = None
+    return {
+        "selector": _str_or(item, "selector", "body")[:500],
+        "xpath": xpath,
+        "bounding_box": bbox,
+        "severity": severity,
+        "category": category,
+        "title": _str_or(item, "title", "Finding")[:200],
+        "description": _str_or(item, "description", "")[:1000],
+        "suggestion": _str_or(item, "suggestion", "")[:1000],
+        "page_url": page_url,
+    }
 
 
 def _serialize_elements(elements: Any) -> str:

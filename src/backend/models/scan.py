@@ -6,7 +6,7 @@ from ..security.url_guard import UnsafeURLError, validate_public_url
 
 Severity = Literal["high", "medium", "low"]
 Category = Literal["a11y", "ux", "contrast", "nav"]
-Status = Literal["pending", "running", "done", "failed"]
+Status = Literal["pending", "running", "done", "failed", "cancelled"]
 
 
 class ScanRequest(BaseModel):
@@ -95,3 +95,35 @@ class ScanSummary(BaseModel):
 
 class ScanListResponse(BaseModel):
     scans: list[ScanSummary]
+
+
+# --- Fix operations -------------------------------------------------------
+
+FixKind = Literal["css", "attribute", "class", "none"]
+
+
+class FixOperation(BaseModel):
+    """A single DOM-mutation operation that safely fixes one finding.
+
+    Validated by :func:`fix_validator.validate_fix_operation` before it
+    ever reaches the extension — callers can treat any instance returned
+    from the API as already-safe for direct application.
+    """
+
+    kind: FixKind
+    # css kind
+    rules: Optional[str] = None
+    # attribute / class kinds
+    selector: Optional[str] = None
+    # attribute kind
+    name: Optional[str] = None
+    value: Optional[str] = None
+    # class kind (space-separated token list)
+    classes: Optional[str] = None
+    # none kind (plus human explanation on any kind if helpful)
+    reason: Optional[str] = None
+
+
+class FixResponse(BaseModel):
+    finding_id: str
+    operation: FixOperation

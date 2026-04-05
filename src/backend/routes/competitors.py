@@ -9,7 +9,11 @@ from ..models.competitor import (
     CompetitorJobStatus,
     CompetitorRequest,
 )
-from ..services.competitor_service import fetch_competitor_job, start_competitor_job
+from ..services.competitor_service import (
+    cancel_competitor_job,
+    fetch_competitor_job,
+    start_competitor_job,
+)
 from ..workers.competitor_worker import run_competitor_job
 
 router = APIRouter(tags=["competitors"])
@@ -33,6 +37,14 @@ async def create_competitor_endpoint(
 @router.get("/competitors/{job_id}", response_model=CompetitorJobStatus)
 async def get_competitor_endpoint(job_id: str) -> CompetitorJobStatus:
     s = await fetch_competitor_job(job_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="competitor job not found")
+    return s
+
+
+@router.post("/competitors/{job_id}/cancel", response_model=CompetitorJobStatus)
+async def cancel_competitor_endpoint(job_id: str) -> CompetitorJobStatus:
+    s = await cancel_competitor_job(job_id)
     if not s:
         raise HTTPException(status_code=404, detail="competitor job not found")
     return s

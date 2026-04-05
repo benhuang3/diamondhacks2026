@@ -17,6 +17,9 @@ import asyncio
 import json
 import logging
 from typing import Any
+from urllib.parse import urlparse
+
+import httpx
 
 from src.config.settings import settings
 from src.db.queries import insert_competitor_result, update_competitor_job
@@ -29,7 +32,8 @@ from ..agents.competitor_browser import (
     extract_competitor_snapshot,
 )
 from ..agents import competitor_prompts as prompts
-from ..observability import scan_log
+from ..observability import cancellation, scan_log
+from ..observability.cancellation import CancelledByUser
 from ..observability.metrics import metrics
 from ..security.url_guard import UnsafeURLError, validate_public_url
 from .report_generator import generate_competitor_report
@@ -100,6 +104,161 @@ _MAX_BROWSE_ATTEMPTS = 2
 # through it until max_competitors successful scrapes have landed.
 # Remaining candidates are cancelled once we have enough successes.
 _DISCOVERY_SPARES = 6
+
+# Domains known to be captcha-walled, auth-gated, or otherwise to waste
+# browse budget every time. These are frequently proposed by Claude's
+# discovery step despite prompt instructions, so we enforce rejection
+# deterministically after discovery. Matches registered domain OR any
+# subdomain (e.g. "shop.amazon.com" matches "amazon.com").
+_CAPTCHA_WALLED_DOMAINS: frozenset[str] = frozenset([
+    # Mega-retailers & marketplaces
+    "amazon.com", "amazon.co.uk", "amazon.ca", "walmart.com",
+    "target.com", "bestbuy.com", "ebay.com", "etsy.com", "macys.com",
+    "nordstrom.com", "nordstromrack.com", "dillards.com", "kohls.com",
+    "jcpenney.com", "sears.com", "homedepot.com", "lowes.com",
+    "costco.com", "samsclub.com", "bjs.com", "wayfair.com",
+    "overstock.com", "alibaba.com", "aliexpress.com", "temu.com",
+    "shein.com", "tjmaxx.com", "marshalls.com", "hsn.com", "qvc.com",
+    # Athletic / shoe retailers with aggressive bot detection
+    "finishline.com", "footlocker.com", "footaction.com",
+    "dickssportinggoods.com", "dsw.com", "famousfootwear.com",
+    "hibbett.com", "academy.com", "champssports.com", "eastbay.com",
+    # Big athletic brands (direct sites are captcha-walled)
+    "nike.com", "adidas.com", "newbalance.com", "underarmour.com",
+    "puma.com", "reebok.com", "asics.com", "brooksrunning.com",
+    "saucony.com", "converse.com", "vans.com",
+    # Google / review aggregators (not storefronts)
+    "google.com", "bing.com", "yelp.com", "trustpilot.com",
+    "reddit.com", "wirecutter.com", "nytimes.com",
+])
+
+
+def _registered_domain(url: str) -> str:
+    """Lowercase host with leading 'www.' stripped. Returns '' on failure."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    return host
+
+
+def _is_denylisted(url: str) -> bool:
+    host = _registered_domain(url)
+    if not host:
+        return False
+    for denied in _CAPTCHA_WALLED_DOMAINS:
+        if host == denied or host.endswith("." + denied):
+            return True
+    return False
+
+
+async def _filter_candidates(
+    candidates: list[dict[str, Any]],
+    *,
+    job_id: str,
+    timeout_s: float = 3.0,
+) -> list[dict[str, Any]]:
+    """Drop candidates that are (a) on the captcha/auth-wall denylist or
+    (b) unreachable via a cheap HEAD probe. ~3s per candidate in parallel;
+    saves a full browser-use session start (~90s each) for dead domains.
+    """
+    # Pass 1: denylist (sync, free).
+    deny_dropped: list[str] = []
+    post_deny: list[dict[str, Any]] = []
+    for c in candidates:
+        url = c.get("url", "")
+        if _is_denylisted(url):
+            deny_dropped.append(_registered_domain(url) or url)
+            log.info(
+                "Competitor job %s dropping denylisted candidate %s",
+                job_id, url,
+            )
+        else:
+            post_deny.append(c)
+
+    # Pass 2: HEAD probe (parallel, lenient).
+    probe_dropped: list[str] = []
+    kept: list[dict[str, Any]] = []
+    if post_deny:
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (compatible; StorefrontReviewer/1.0; "
+                "+https://storefront-reviewer.example)"
+            ),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+        }
+
+        async def _probe(c: dict[str, Any]) -> bool:
+            url = c.get("url", "")
+            # Two tries: once with strict cert verification, once without.
+            # Real dead domains (timeout, DNS, conn refused) fail both.
+            # Sites with dodgy intermediate cert chains pass the second —
+            # browser-use on cloud handles those fine anyway.
+            for verify in (True, False):
+                try:
+                    async with httpx.AsyncClient(
+                        timeout=timeout_s,
+                        follow_redirects=True,
+                        headers=headers,
+                        verify=verify,
+                    ) as client:
+                        try:
+                            r = await client.head(url)
+                            if r.status_code in (405, 501):
+                                r = await client.get(url)
+                        except httpx.HTTPError:
+                            r = await client.get(url)
+                    # Lenient: treat anything < 500 as reachable. DTC
+                    # sites commonly return 403 to bot-looking HEADs
+                    # but serve browser-use fine.
+                    return r.status_code < 500
+                except (httpx.ConnectError, httpx.ConnectTimeout,
+                        httpx.ReadTimeout, httpx.RemoteProtocolError):
+                    # Dead domain / unreachable → try again w/o verify
+                    # in case the only issue was a cert chain problem.
+                    continue
+                except Exception:  # noqa: BLE001
+                    continue
+            return False
+
+        results = await asyncio.gather(
+            *[_probe(c) for c in post_deny], return_exceptions=True
+        )
+        for c, ok in zip(post_deny, results):
+            if ok is True:
+                kept.append(c)
+            else:
+                probe_dropped.append(_registered_domain(c.get("url", "")) or c.get("url", ""))
+
+    log.info(
+        "Competitor job %s candidate filter: %d → %d "
+        "(denylist dropped %d: %s; unreachable dropped %d: %s)",
+        job_id,
+        len(candidates),
+        len(kept),
+        len(deny_dropped),
+        ", ".join(deny_dropped[:5]) + ("…" if len(deny_dropped) > 5 else ""),
+        len(probe_dropped),
+        ", ".join(probe_dropped[:5]) + ("…" if len(probe_dropped) > 5 else ""),
+    )
+    scan_log.append(
+        job_id,
+        {
+            "step": 18,
+            "source": "worker",
+            "lane": "filter",
+            "next_goal": (
+                f"filtered {len(candidates)} → {len(kept)} candidates"
+            ),
+            "evaluation": (
+                f"dropped {len(deny_dropped)} captcha-walled "
+                f"+ {len(probe_dropped)} unreachable"
+            ),
+        },
+    )
+    return kept
 
 
 async def _run_demo(job_id: str, store_url: str, prompt: str | None, hint: str | None) -> None:
@@ -174,6 +333,7 @@ async def _browse_one(
     idx: int,
     hint: str | None = None,
     other_products: list[str] | None = None,
+    target_items_count: int = 3,
 ) -> dict[str, Any] | None:
     raw_url = candidate.get("url", "")
     raw_name = candidate.get("name") or f"Competitor {idx+1}"
@@ -238,27 +398,53 @@ async def _browse_one(
                 )
                 snapshot = None
                 continue
-            # Accept when checkout was reached and we're not in fallback mode.
-            if (
-                not snapshot.get("is_fallback")
-                and snapshot.get("reached_checkout")
+            # Break when the snapshot is usable. With catalog-first
+            # extraction, a captured catalog `price` is already valuable
+            # even if the cart walk couldn't read shipping/tax — no need
+            # to retry in that case.
+            if not snapshot.get("is_fallback") and (
+                snapshot.get("reached_checkout")
+                or isinstance(snapshot.get("price"), (int, float))
             ):
                 break
-            # Either fallback or checkout not reached → retry.
+            # Fallback OR no price captured → retry.
             if attempt < _MAX_BROWSE_ATTEMPTS:
                 log.info(
-                    "Competitor job %s %s did not reach checkout (fallback=%s); retrying",
-                    job_id, url, bool(snapshot.get("is_fallback")),
+                    "Competitor job %s %s no price captured (fallback=%s, "
+                    "reached=%s); retrying",
+                    job_id, url,
+                    bool(snapshot.get("is_fallback")),
+                    bool(snapshot.get("reached_checkout")),
                 )
 
-        if (
-            snapshot is None
-            or snapshot.get("is_fallback")
-            or not snapshot.get("reached_checkout")
-        ):
+        # Qualification: competitor is kept if we captured at least 1 of
+        # the target items' prices (main product OR any ancillary lookup).
+        # Loose threshold — we only need one comparable price to include
+        # a competitor in the synthesis.
+        def _priced_count(snap: dict[str, Any] | None) -> int:
+            if not snap:
+                return 0
+            n = int(isinstance(snap.get("price"), (int, float)))
+            for p in snap.get("other_product_prices") or []:
+                raw = p.get("price") if isinstance(p, dict) else getattr(p, "price", None)
+                if isinstance(raw, (int, float)):
+                    n += 1
+            return n
+
+        required = 1
+        priced = _priced_count(snapshot)
+        # Tri-state qualification:
+        #   FULL     — priced >= required: first-class snapshot
+        #   PARTIAL  — priced == 1 < required: kept as tie-breaker when
+        #              the pipeline is starved of full successes
+        #   REJECTED — fallback snapshot OR priced == 0: useless
+        is_partial = False
+        if snapshot is None or snapshot.get("is_fallback") or priced < 1:
             log.info(
-                "Competitor job %s giving up on %s after %d attempts",
-                job_id, url, _MAX_BROWSE_ATTEMPTS,
+                "Competitor job %s giving up on %s after %d attempts "
+                "(priced=%d/%d, need %d)",
+                job_id, url, _MAX_BROWSE_ATTEMPTS, priced,
+                max(1, target_items_count), required,
             )
             scan_log.append(
                 job_id,
@@ -266,10 +452,20 @@ async def _browse_one(
                     "step": step_offset - 1,
                     "lane": lane,
                     "next_goal": f"skipped {name} after {_MAX_BROWSE_ATTEMPTS} attempts",
-                    "evaluation": "site unavailable / not scrape-able",
+                    "evaluation": (
+                        f"only {priced}/{max(1, target_items_count)} "
+                        "item prices captured — not scrape-able"
+                    ),
                 },
             )
             return None
+        if priced < required:
+            is_partial = True
+            log.info(
+                "Competitor job %s accepting %s as PARTIAL "
+                "(priced=%d/%d, wanted %d)",
+                job_id, url, priced, max(1, target_items_count), required,
+            )
 
     promos = snapshot.get("promos") or []
     price = snapshot.get("price")
@@ -300,7 +496,8 @@ async def _browse_one(
     featured_product = snapshot.get("featured_product", "") or ""
     is_fallback = bool(snapshot.get("is_fallback"))
     fallback_tag = (
-        "[placeholder data — browse failed] " if is_fallback else ""
+        "[placeholder data — browse failed] " if is_fallback
+        else ("[partial data] " if is_partial else "")
     )
     notes_text = fallback_tag + _compose_notes(
         rationale=rationale,
@@ -334,9 +531,30 @@ async def _browse_one(
         else "—"
     )
     reached_suffix = "" if reached_checkout else " (not reached)"
+    # Log what we got + what's missing, per field, so partial-data rows
+    # are easy to diagnose from logs alone.
+    missing_fields = [
+        name for (name, val) in (
+            ("price", price),
+            ("shipping", shipping),
+            ("tax", tax),
+            ("checkout_total", checkout_total),
+        )
+        if not isinstance(val, (int, float))
+    ]
+    ancillary = len(snapshot.get("other_product_prices") or [])
     log.info(
-        "Competitor job %s persisted %s: total=%s%s",
-        job_id, name, total_str, reached_suffix,
+        "Competitor job %s persisted %s: price=%s ship=%s tax=%s "
+        "total=%s ancillary=%d reached=%s%s%s",
+        job_id, name,
+        f"${float(price):.2f}" if isinstance(price, (int, float)) else "—",
+        f"${float(shipping):.2f}" if isinstance(shipping, (int, float)) else "—",
+        f"${float(tax):.2f}" if isinstance(tax, (int, float)) else "—",
+        total_str,
+        ancillary,
+        reached_checkout,
+        reached_suffix,
+        (f" missing={','.join(missing_fields)}" if missing_fields else ""),
     )
     scan_log.append(
         job_id,
@@ -374,6 +592,7 @@ async def _browse_one(
         "notes": snapshot.get("notes", "") or "",
         "rationale": rationale,
         "is_fallback": is_fallback,
+        "is_partial": is_partial,
         "other_product_prices": snapshot.get("other_product_prices") or [],
     }
 
@@ -382,6 +601,7 @@ async def _run_live(
     job_id: str, store_url: str, prompt: str | None, hint: str | None
 ) -> None:
     await update_competitor_job(job_id, status="running", progress=0.05)
+    cancellation.raise_if_cancelled(job_id)
     # ---- Stage 0: observe the target store itself -------------------------
     scan_log.append(
         job_id,
@@ -396,6 +616,8 @@ async def _run_live(
         target_snapshot = await extract_competitor_snapshot(
             store_url, scan_id=job_id, step_offset=500,
             lane="your store",
+            is_target=True,
+            custom_prompt=prompt,
         )
     except Exception as e:  # noqa: BLE001
         log.warning(
@@ -414,9 +636,36 @@ async def _run_live(
             },
         )
 
+    client = ClaudeClient()
+
+    # ---- Stage 0.5: normalize the target's top_products into generic
+    # ---- product categories BEFORE discovery, so discovery can search
+    # ---- for stores that actually carry those categories (instead of
+    # ---- stores semantically similar to the target's URL, which often
+    # ---- don't overlap on SKU coverage at all).
+    shared_products = await _normalize_top_products(
+        store_url=store_url,
+        target_snapshot=target_snapshot,
+        hint=hint,
+        custom_prompt=prompt,
+        client=client,
+        job_id=job_id,
+    )
+    if not shared_products:
+        shared_products = _shared_products_from_target(target_snapshot)
+    # Sanitize category names before handing them to downstream Claude
+    # prompts / URL-encoded search queries. Names may originate from raw
+    # scraped SKUs (fallback path), so scrub injection markers + caps.
+    target_categories = [
+        _sanitize_untrusted(p["name"], max_len=80)
+        for p in (shared_products or []) if p.get("name")
+    ]
+    target_categories = [
+        c for c in target_categories if c and c != "(none)"
+    ][:3]
+
     use_agent_discovery = cloud_enabled()
 
-    client = ClaudeClient()
     candidates_raw: list[dict[str, Any]] = []
 
     if use_agent_discovery:
@@ -437,9 +686,10 @@ async def _run_live(
                 store_url=store_url,
                 product_hint=_sanitize_untrusted(hint, max_len=500),
                 custom_prompt=_sanitize_untrusted(prompt),
+                target_categories=target_categories,
                 scan_id=job_id,
                 step_offset_base=30,
-                per_agent_count=5,
+                per_agent_count=3,
             )
         except Exception as e:  # noqa: BLE001
             log.warning("Competitor job %s parallel discovery failed: %s", job_id, e)
@@ -460,6 +710,9 @@ async def _run_live(
             store_url=store_url,
             product_hint=_sanitize_untrusted(hint, max_len=500),
             custom_prompt=_sanitize_untrusted(prompt),
+            target_categories=(
+                ", ".join(target_categories) if target_categories else "(none extracted)"
+            ),
         )
         text = await client.complete(
             discovery_prompt,
@@ -492,8 +745,57 @@ async def _run_live(
         if len(candidates) >= settings.max_competitors + _DISCOVERY_SPARES:
             break
 
+    log.info(
+        "Competitor job %s discovery: raw=%d kept=%d (dropped %d invalid/dupe)",
+        job_id,
+        len(candidates_raw),
+        len(candidates),
+        len(candidates_raw) - len(candidates),
+    )
+
+    # Cheap filter: domain denylist + HEAD-probe reachability. Drops
+    # captcha-walled retailers and dead domains BEFORE we pay the
+    # browser-use session-start cost (~90s each). Keep the pre-filter
+    # list so escalation can use it as negative examples.
+    pre_filter_candidates = list(candidates)
+    candidates = await _filter_candidates(candidates, job_id=job_id)
+
+    if candidates:
+        preview = ", ".join(c.get("name", "?") for c in candidates[:5])
+        log.info(
+            "Competitor job %s candidates: %s%s",
+            job_id, preview, "…" if len(candidates) > 5 else "",
+        )
+
+    # If the filter killed every candidate (all denylisted/dead), try
+    # one escalation Claude call to propose alternatives before giving
+    # up. Saves the demo-fallback humiliation when discovery was noisy.
+    if not candidates and pre_filter_candidates:
+        log.info(
+            "Competitor job %s: filter dropped all %d candidates — "
+            "escalating immediately",
+            job_id, len(pre_filter_candidates),
+        )
+        extra = await _escalate_candidates(
+            store_url=store_url,
+            target_categories=target_categories,
+            failed_candidates=pre_filter_candidates,
+            hint=hint,
+            custom_prompt=prompt,
+            client=client,
+            job_id=job_id,
+        )
+        candidates = await _filter_candidates(extra, job_id=job_id)
+
     if not candidates:
-        raise DemoFallbackError("no competitors discovered")
+        log.warning(
+            "Competitor job %s has no reachable candidates after filter — "
+            "falling back to demo",
+            job_id,
+        )
+        raise DemoFallbackError("no reachable competitors after filter")
+
+    cancellation.raise_if_cancelled(job_id)
 
     scan_log.append(
         job_id,
@@ -505,17 +807,33 @@ async def _run_live(
     )
     await update_competitor_job(job_id, progress=0.22)
 
-    # ---- Stage 1.5: identify the 3 product types target + competitors
-    # ---- all likely sell. Top-ranked one becomes the hint for cart walks.
-    shared_products = await _identify_shared_products(
-        store_url=store_url,
-        target_snapshot=target_snapshot,
-        candidates=candidates,
-        hint=hint,
-        custom_prompt=prompt,
-        client=client,
-        job_id=job_id,
-    )
+    # ---- Stage 1.5: shared_products was derived from target top_products
+    # ---- via Claude normalization in Stage 0.5. If that produced
+    # ---- nothing (empty target, both normalize + raw-SKU fallback
+    # ---- failed), fall back to Claude's candidate-aware shared-products
+    # ---- identification here so cart walks still have a product hint.
+    if not shared_products:
+        shared_products = await _identify_shared_products(
+            store_url=store_url,
+            target_snapshot=target_snapshot,
+            candidates=candidates,
+            hint=hint,
+            custom_prompt=prompt,
+            client=client,
+            job_id=job_id,
+        )
+    if shared_products:
+        log.info(
+            "Competitor job %s identified %d shared product types: %s",
+            job_id, len(shared_products),
+            " | ".join(p.get("name", "?") for p in shared_products),
+        )
+    else:
+        log.info(
+            "Competitor job %s: no shared products identified; cart walks "
+            "will use user hint %r",
+            job_id, hint or "",
+        )
     cart_hint_raw = (
         shared_products[0]["name"] if shared_products else hint or ""
     )
@@ -540,30 +858,60 @@ async def _run_live(
     # Work through the ranked candidate list, keeping successful browses
     # as they arrive. Once we have max_competitors successes, cancel the
     # rest so we don't pay for cloud sessions we're about to discard.
+    # How many items the target is being compared on. Qualification
+    # threshold inside _browse_one scales off this.
+    target_items_count = len(shared_products) if shared_products else 0
     tasks = [
         asyncio.create_task(
             _browse_one(
                 c, job_id=job_id, sem=sem, idx=i,
                 hint=cart_hint, other_products=other_product_names,
+                target_items_count=target_items_count,
             )
         )
         for i, c in enumerate(candidates)
     ]
-    snapshots_list: list[dict[str, Any]] = []
+    full_snapshots: list[dict[str, Any]] = []
+    partial_snapshots: list[dict[str, Any]] = []
+
+    def _count_total() -> int:
+        return len(full_snapshots) + len(partial_snapshots)
+
+    def _absorb(result: dict[str, Any]) -> None:
+        if result.get("is_partial"):
+            partial_snapshots.append(result)
+        else:
+            full_snapshots.append(result)
+
     try:
         for fut in asyncio.as_completed(tasks):
+            if cancellation.is_cancelled(job_id):
+                log.info(
+                    "Competitor job %s: cancellation detected mid-browse; "
+                    "breaking out of cart-walk loop",
+                    job_id,
+                )
+                break
             result = await fut
             if result is not None:
-                snapshots_list.append(result)
+                _absorb(result)
                 # Incremental progress so the bar doesn't sit at 0.28 for
                 # minutes while cart walks run. 0.28 → ~0.70 across all
-                # competitor successes.
+                # competitor successes (counts full + partial).
                 pct = 0.28 + 0.42 * (
-                    min(len(snapshots_list), settings.max_competitors)
+                    min(_count_total(), settings.max_competitors)
                     / max(1, settings.max_competitors)
                 )
                 await update_competitor_job(job_id, progress=pct)
-                if len(snapshots_list) >= settings.max_competitors:
+                # Early-exit: enough FULL successes (best case), OR
+                # enough total candidates have returned (bound worst-
+                # case latency — if 2N candidates landed without hitting
+                # max_competitors fulls, remaining ones probably won't
+                # either, and we already have enough partials to show).
+                if (
+                    len(full_snapshots) >= settings.max_competitors
+                    or _count_total() >= settings.max_competitors * 2
+                ):
                     break
     finally:
         # Cancel any still-running browses; run_cloud_agent's finally
@@ -573,24 +921,105 @@ async def _run_live(
                 t.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-    if snapshots_list:
+
+    # If the user clicked Stop, bail before wasting tokens on synthesis.
+    cancellation.raise_if_cancelled(job_id)
+
+    total = _count_total()
+    if total:
         scan_log.append(
             job_id,
             {
                 "step": 98,
                 "next_goal": (
-                    f"collected {len(snapshots_list)}/"
-                    f"{settings.max_competitors} successful snapshots; "
-                    "cancelling remaining browses"
+                    f"collected {len(full_snapshots)} full + "
+                    f"{len(partial_snapshots)} partial snapshots "
+                    f"(target {settings.max_competitors}); cancelling "
+                    "remaining browses"
                 ),
             },
         )
 
-    if not snapshots_list:
-        raise DemoFallbackError("no competitor snapshots captured")
+    log.info(
+        "Competitor job %s cart walks: %d full + %d partial (target %d)",
+        job_id, len(full_snapshots), len(partial_snapshots),
+        settings.max_competitors,
+    )
 
-    # Note: _browse_one already filters out fallback + not-reached
-    # snapshots, so snapshots_list contains only clean live results here.
+    # ---- Escalation: if zero snapshots of any kind landed, ask Claude
+    # ---- for a fresh candidate list avoiding the failed domains and
+    # ---- retry ONCE before giving up.
+    if total == 0 and not cancellation.is_cancelled(job_id):
+        log.info(
+            "Competitor job %s: zero snapshots — escalating with "
+            "Claude for alt candidates",
+            job_id,
+        )
+        extra_candidates = await _escalate_candidates(
+            store_url=store_url,
+            target_categories=target_categories,
+            failed_candidates=candidates,
+            hint=hint,
+            custom_prompt=prompt,
+            client=client,
+            job_id=job_id,
+        )
+        extra_candidates = await _filter_candidates(
+            extra_candidates, job_id=job_id
+        )
+        if extra_candidates:
+            extra_sem = asyncio.Semaphore(_BROWSE_CONCURRENCY)
+            extra_tasks = [
+                asyncio.create_task(
+                    _browse_one(
+                        c, job_id=job_id, sem=extra_sem,
+                        idx=len(candidates) + i,
+                        hint=cart_hint, other_products=other_product_names,
+                        target_items_count=target_items_count,
+                    )
+                )
+                for i, c in enumerate(extra_candidates)
+            ]
+            try:
+                for fut in asyncio.as_completed(extra_tasks):
+                    if cancellation.is_cancelled(job_id):
+                        break
+                    result = await fut
+                    if result is not None:
+                        _absorb(result)
+                        if (
+                            len(full_snapshots) >= settings.max_competitors
+                            or _count_total() >= settings.max_competitors * 2
+                        ):
+                            break
+            finally:
+                for t in extra_tasks:
+                    if not t.done():
+                        t.cancel()
+                if extra_tasks:
+                    await asyncio.gather(*extra_tasks, return_exceptions=True)
+        total = _count_total()
+        log.info(
+            "Competitor job %s post-escalation: %d full + %d partial",
+            job_id, len(full_snapshots), len(partial_snapshots),
+        )
+
+    # Merge: prefer FULL snapshots; use PARTIAL to top up to
+    # max_competitors when full successes are scarce.
+    snapshots_list = list(full_snapshots[: settings.max_competitors])
+    need_more = settings.max_competitors - len(snapshots_list)
+    if need_more > 0 and partial_snapshots:
+        snapshots_list.extend(partial_snapshots[:need_more])
+
+    if not snapshots_list:
+        log.warning(
+            "Competitor job %s: zero cart walks succeeded "
+            "(including escalation) — falling back to demo",
+            job_id,
+        )
+        raise DemoFallbackError(
+            "no competitor snapshots captured (post-escalation)"
+        )
 
     await update_competitor_job(job_id, progress=0.75)
     scan_log.append(
@@ -651,6 +1080,11 @@ async def _run_live(
 
     if synthesis is None:
         # Fallback: derive a basic summary from the snapshot list.
+        log.warning(
+            "Competitor job %s synthesis unavailable — using deterministic "
+            "fallback brief (%d snapshots)",
+            job_id, len(snapshots_list),
+        )
         synthesis = _fallback_synthesis(store_url, snapshots_list)
         scan_log.append(
             job_id,
@@ -661,6 +1095,13 @@ async def _run_live(
             },
         )
     else:
+        scores = synthesis.get("scores", {})
+        log.info(
+            "Competitor job %s synthesis ok: %d recs, scores=%s",
+            job_id,
+            len(synthesis.get("recommendations", [])),
+            scores,
+        )
         scan_log.append(
             job_id,
             {
@@ -675,7 +1116,7 @@ async def _run_live(
     await update_competitor_job(job_id, progress=0.9)
     await generate_competitor_report(
         job_id, store_url, synthesis=synthesis, price_table=price_table,
-        shared_products=shared_products,
+        shared_products=shared_products, target_snapshot=target_snapshot,
     )
     await update_competitor_job(job_id, status="done", progress=1.0)
     scan_log.append(job_id, {"step": 4, "next_goal": "done"})
@@ -813,6 +1254,246 @@ def _fallback_synthesis(
         "recommendations": recs,
         "scores": {"pricing": 60, "value": 60, "experience": 70},
     }
+
+
+def _shared_products_from_target(
+    target_snapshot: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    """Raw fallback: use the target's specific SKUs verbatim as the match
+    set. Only used if Claude normalization fails — specific SKUs rarely
+    overlap across stores, but something is better than nothing."""
+    if not target_snapshot or target_snapshot.get("is_fallback"):
+        return []
+    items = target_snapshot.get("top_products") or []
+    out: list[dict[str, Any]] = []
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("product") or "").strip()
+        if not name:
+            continue
+        out.append({
+            "name": name[:120],
+            "description": "from target store's top products",
+            "match_likelihood": 80,
+        })
+        if len(out) >= 3:
+            break
+    return out
+
+
+async def _normalize_top_products(
+    *,
+    store_url: str,
+    target_snapshot: dict[str, Any] | None,
+    hint: str | None,
+    custom_prompt: str | None,
+    client: ClaudeClient,
+    job_id: str,
+) -> list[dict[str, Any]]:
+    """Convert the target's specific SKU names into generic category terms
+    (e.g. 'Adidas Samba OG Crocodile Silver' → 'lifestyle sneaker') so
+    cart walks on OTHER storefronts stand a chance of finding comparable
+    items. Returns ``[]`` when the target has no top_products or Claude
+    fails — caller falls back to :func:`_shared_products_from_target`.
+    """
+    if not target_snapshot or target_snapshot.get("is_fallback"):
+        return []
+    raw_items = target_snapshot.get("top_products") or []
+    # SKU names come from scraped page content (untrusted). Scrub the
+    # injection markers + control chars before sending to Claude.
+    top_products = [
+        {
+            "product": _sanitize_untrusted(
+                str(it.get("product") or ""), max_len=160
+            ),
+            "price": it.get("price") if isinstance(it.get("price"), (int, float)) else None,
+        }
+        for it in raw_items
+        if isinstance(it, dict) and str(it.get("product") or "").strip()
+    ][:3]
+    # Drop items that ended up as "(none)" / empty after sanitization.
+    top_products = [
+        tp for tp in top_products
+        if tp["product"] and tp["product"] != "(none)"
+    ]
+    if not top_products:
+        return []
+
+    scan_log.append(
+        job_id,
+        {
+            "step": 13,
+            "source": "claude",
+            "lane": "claude: normalize",
+            "next_goal": (
+                f"normalizing {len(top_products)} target SKUs into "
+                "generic product categories"
+            ),
+        },
+    )
+    try:
+        prompt_text = prompts.NORMALIZE_PRODUCTS_PROMPT.format(
+            store_url=store_url,
+            product_hint=_sanitize_untrusted(hint, max_len=500),
+            custom_prompt=_sanitize_untrusted(custom_prompt),
+            top_products_json=json.dumps(top_products, ensure_ascii=False),
+        )
+        text = await client.complete(
+            prompt_text,
+            system=prompts.SYSTEM_NORMALIZE_PRODUCTS,
+            max_tokens=512,
+        )
+        parsed = _extract_json_object(text)
+    except DemoFallbackError as e:
+        log.info("normalize-top-products Claude call failed: %s", e)
+        return []
+    except Exception as e:  # noqa: BLE001
+        log.warning("normalize-top-products parse error: %s", e)
+        return []
+
+    if not isinstance(parsed, dict):
+        return []
+    raw_products = parsed.get("products") or []
+    if not isinstance(raw_products, list):
+        return []
+    out: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for item in raw_products[:3]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip().lower()[:120]
+        desc = str(item.get("description", "")).strip()[:240]
+        if not name or name in seen_names:
+            # Broad categories will often collapse (e.g. 2 SKUs both →
+            # 'sneakers'); dedup so cart_hint + other_products don't
+            # repeat the same category.
+            continue
+        seen_names.add(name)
+        out.append({
+            "name": name,
+            "description": desc,
+            "match_likelihood": 85,
+        })
+
+    if out:
+        scan_log.append(
+            job_id,
+            {
+                "step": 14,
+                "source": "claude",
+                "lane": "claude: normalize",
+                "next_goal": f"normalized to {len(out)} generic categories",
+                "evaluation": " | ".join(p["name"] for p in out),
+            },
+        )
+    return out
+
+
+async def _escalate_candidates(
+    *,
+    store_url: str,
+    target_categories: list[str],
+    failed_candidates: list[dict[str, Any]],
+    hint: str | None,
+    custom_prompt: str | None,
+    client: ClaudeClient,
+    job_id: str,
+) -> list[dict[str, Any]]:
+    """Ask Claude for 3 alternative candidates after the initial set all
+    failed. Negatively conditions the prompt with the failed domain list
+    so Claude doesn't suggest close variants. Returns ``[]`` if Claude
+    fails or returns nothing. Returned candidates still go through the
+    same URL validation + filter pipeline as the initial set."""
+    failed_display = []
+    failed_domains: set[str] = set()
+    for c in failed_candidates[:12]:
+        name = str(c.get("name", "?"))[:60]
+        domain = _registered_domain(c.get("url", ""))
+        if domain:
+            failed_domains.add(domain)
+            failed_display.append(f"- {name} ({domain})")
+    if not failed_display:
+        failed_display = ["- (none recorded)"]
+
+    scan_log.append(
+        job_id,
+        {
+            "step": 96,
+            "source": "claude",
+            "lane": "claude: escalation",
+            "next_goal": (
+                "all candidates failed — asking Claude for alternatives"
+            ),
+            "evaluation": (
+                f"{len(failed_candidates)} failed, "
+                f"target categories: {', '.join(target_categories) or 'none'}"
+            ),
+        },
+    )
+    try:
+        prompt_text = prompts.ESCALATE_CANDIDATES_PROMPT.format(
+            store_url=store_url,
+            target_categories=(
+                ", ".join(target_categories) if target_categories else "(none extracted)"
+            ),
+            product_hint=_sanitize_untrusted(hint, max_len=500),
+            custom_prompt=_sanitize_untrusted(custom_prompt),
+            failed_list="\n".join(failed_display),
+        )
+        text = await client.complete(
+            prompt_text,
+            system=prompts.SYSTEM_ESCALATE_CANDIDATES,
+            max_tokens=512,
+        )
+        raw = _extract_json_array(text)
+    except DemoFallbackError as e:
+        log.info("escalation Claude call failed: %s", e)
+        return []
+    except Exception as e:  # noqa: BLE001
+        log.warning("escalation parse error: %s", e)
+        return []
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        raw_url = str(c.get("url", "")).strip()
+        if not raw_url:
+            continue
+        try:
+            safe = validate_public_url(raw_url)
+        except UnsafeURLError:
+            continue
+        dom = _registered_domain(safe)
+        # Drop anything Claude accidentally re-proposed.
+        if dom in failed_domains or safe in seen:
+            continue
+        seen.add(safe)
+        out.append({**c, "url": safe})
+        if len(out) >= 3:
+            break
+
+    log.info(
+        "Competitor job %s escalation returned %d fresh candidates: %s",
+        job_id, len(out),
+        ", ".join(c.get("name", "?") for c in out),
+    )
+    if out:
+        scan_log.append(
+            job_id,
+            {
+                "step": 97,
+                "source": "claude",
+                "lane": "claude: escalation",
+                "next_goal": f"retrying with {len(out)} fresh candidates",
+                "evaluation": ", ".join(
+                    c.get("name", "?") for c in out
+                ),
+            },
+        )
+    return out
 
 
 async def _identify_shared_products(
@@ -987,6 +1668,19 @@ async def run_competitor_job(
                 )
                 await _run_demo(job_id, store_url, prompt, hint)
         metrics.inc("competitor_jobs_completed_total")
+    except CancelledByUser:
+        log.info("Competitor job %s cancelled by user — exiting cleanly", job_id)
+        metrics.inc("competitor_jobs_cancelled_total")
+        # DB status already set to "cancelled" by the route handler that
+        # fired the cancel; don't overwrite it.
+        scan_log.append(
+            job_id,
+            {
+                "step": 99,
+                "next_goal": "cancelled by user",
+                "evaluation": "stop requested",
+            },
+        )
     except Exception as e:  # noqa: BLE001
         log.exception("Competitor job %s failed: %s", job_id, e)
         metrics.inc("competitor_jobs_failed_total", reason="exception")
@@ -996,3 +1690,5 @@ async def run_competitor_job(
             )
         except Exception:  # noqa: BLE001
             log.exception("Failed to mark competitor job %s as failed", job_id)
+    finally:
+        cancellation.clear(job_id)

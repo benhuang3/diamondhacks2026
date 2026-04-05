@@ -9,9 +9,13 @@ prompts and DB rows bounded.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _none_to_empty_list(v: Any) -> Any:
+    return [] if v is None else v
 
 
 PageKind = Literal["home", "category", "product", "cart", "other"]
@@ -50,6 +54,10 @@ class PageVisit(BaseModel):
         default_factory=list,
         description="Up to 12 interactive elements observed on the page",
     )
+    _coerce_interactive = field_validator(
+        "interactive_elements", mode="before"
+    )(_none_to_empty_list)
+
     missing_alt_images: int = Field(
         default=0,
         description="Count of <img> elements missing an alt attribute",
@@ -66,4 +74,7 @@ class CrawlSnapshot(BaseModel):
     pages: list[PageVisit] = Field(
         default_factory=list,
         description="Ordered list of pages visited (home first, cart last)",
+    )
+    _coerce_pages = field_validator("pages", mode="before")(
+        _none_to_empty_list
     )

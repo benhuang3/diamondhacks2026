@@ -1,6 +1,6 @@
 // Mirrors backend models (CONTRACTS.md §2). Keep in sync with web/lib/types.ts.
 
-export type Status = "pending" | "running" | "done" | "failed";
+export type Status = "pending" | "running" | "done" | "failed" | "cancelled";
 export type Severity = "high" | "medium" | "low";
 export type Category = "a11y" | "ux" | "contrast" | "nav";
 
@@ -83,6 +83,18 @@ export interface CompetitorJobStatus {
   steps?: ScanStep[];
 }
 
+// Fix operations — match backend FixOperation pydantic model.
+export type FixOperation =
+  | { kind: "css"; rules: string }
+  | { kind: "attribute"; selector: string; name: string; value: string }
+  | { kind: "class"; selector: string; classes: string }
+  | { kind: "none"; reason: string };
+
+export interface FixResponse {
+  finding_id: string;
+  operation: FixOperation;
+}
+
 // Message payloads
 export type ExtensionMessage =
   | { type: "START_SCAN"; url: string }
@@ -91,7 +103,10 @@ export type ExtensionMessage =
   | { type: "INJECT_ANNOTATIONS"; annotations: ScanFinding[] }
   | { type: "CLEAR_ANNOTATIONS" }
   | { type: "GET_STATE" }
-  | { type: "PING" };
+  | { type: "PING" }
+  | { type: "FIX_FINDING"; finding_id: string }
+  | { type: "APPLY_FIX"; finding_id: string; operation: FixOperation }
+  | { type: "FIX_ERROR"; finding_id: string; error: string };
 
 export interface PopupState {
   scanId: string | null;

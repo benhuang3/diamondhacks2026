@@ -12,6 +12,8 @@ interface MatrixRow {
   competitor: string;
   url: string;
   prices: (number | null)[];
+  price_urls?: (string | null)[];
+  is_target?: boolean;
 }
 
 interface MatrixData {
@@ -62,7 +64,11 @@ export function PriceMatrixTable({ data }: { data: MatrixData }) {
               {data.rows.map((r, i) => (
                 <tr
                   key={i}
-                  className="border-b border-slate-100 last:border-0"
+                  className={
+                    r.is_target
+                      ? "border-b border-slate-200 bg-slate-100"
+                      : "border-b border-slate-100 last:border-0"
+                  }
                 >
                   <td className="py-3 pr-4">
                     {r.url ? (
@@ -72,22 +78,37 @@ export function PriceMatrixTable({ data }: { data: MatrixData }) {
                         rel="noreferrer"
                         className="font-medium text-slate-900 hover:text-brand-600"
                       >
-                        {r.competitor}
+                        {r.is_target ? `🏠 ${r.competitor}` : r.competitor}
                       </a>
                     ) : (
                       <span className="font-medium text-slate-900">
-                        {r.competitor}
+                        {r.is_target ? `🏠 ${r.competitor}` : r.competitor}
                       </span>
                     )}
                   </td>
-                  {r.prices.map((p, j) => (
-                    <td
-                      key={j}
-                      className={`py-3 pr-4 tabular-nums ${priceClass(j, p)}`}
-                    >
-                      {p != null ? `$${p.toFixed(2)}` : "—"}
-                    </td>
-                  ))}
+                  {r.prices.map((p, j) => {
+                    const href = r.price_urls?.[j] ?? null;
+                    const text = p != null ? `$${p.toFixed(2)}` : "—";
+                    return (
+                      <td
+                        key={j}
+                        className={`py-3 pr-4 tabular-nums ${priceClass(j, p)}`}
+                      >
+                        {href && p != null ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="underline decoration-dotted underline-offset-2 hover:text-brand-600"
+                          >
+                            {text}
+                          </a>
+                        ) : (
+                          text
+                        )}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

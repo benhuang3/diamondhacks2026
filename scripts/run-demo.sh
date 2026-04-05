@@ -60,7 +60,9 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+LOG_FILE="${LOG_FILE:-logs/backend.log}"
 echo "▸ backend (demo)  on http://localhost:$BACKEND_PORT"
+echo "                  logs: $LOG_FILE  (warnings also echo to this terminal)"
 DEMO_MODE=true \
 ANTHROPIC_API_KEY="" \
 "$VENV_UVICORN" src.backend.main:app \
